@@ -73,9 +73,8 @@ sudo systemctl disable --now apt-daily.timer
 ## Docker section
 
 ```
-mkdir ~/docker/nodered/node-red
+mkdir -p ~/docker/nodered/node-red/data
 mkdir ~/docker/nodered/nginx
-mkdir -p /home/boneio/docker/nodered/data && \
 tee ~/docker/nodered/docker-compose.yaml <<'EOF'
 services:
   node-red:
@@ -90,7 +89,7 @@ services:
       - edge
 
   nginx:
-    image: nginx:1.29-alpine
+    image: nginx:1.29-alpine-slim
     restart: unless-stopped
     depends_on:
       - node-red
@@ -106,7 +105,6 @@ services:
 networks:
   edge:
 EOF
-mkdir -p ~/docker/nodered/node-red && \
 tee ~/docker/nodered/node-red/settings.js <<EOF
 module.exports = {
   httpAdminRoot: "/nodered",
@@ -114,8 +112,6 @@ module.exports = {
   ui: { path: "ui" },
 };
 EOF
-
-mkdir -p /home/boneio/docker/nodered/nginx && \
 tee /home/boneio/docker/nodered/nginx/default.conf <<'EOF'
 map $http_upgrade $connection_upgrade {
     default upgrade;

@@ -32,6 +32,8 @@ sudo ufw allow 8091
 ```
 sudo apt update
 sudo apt install -y libopenjp2-7-dev python3-venv libjpeg-dev docker-compose docker.io fonts-dejavu-core fonts-dejavu-extra libffi-dev libfreetype-dev libtiff6 libxcb1 mosquitto
+usermod -aG docker boneio
+exit # and relogin
 ```
 
 ## GPIO Preparation (for each Kernel!)

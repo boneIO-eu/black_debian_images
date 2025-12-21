@@ -59,7 +59,8 @@ sudo sed -i \
 ## APT Remove Section
 
 ```bash
-sudo apt remove manpages wireless-tools ti-pru-cgt-v2.3 alsa-topology-conf alsa-ucm-conf bb-u-boot-am57xx-evm bb-wl18xx-firmware bb-wlan0-defaults bluetooth bluez firmware-atheros firmware-brcm80211 firmware-libertas firmware-mediatek firmware-realtek hostapd ncal nginx nginx-common rfkill wireguard-tools
+sudo apt remove manpages wireless-tools ti-pru-cgt-v2.3 alsa-topology-conf alsa-ucm-conf bb-u-boot-am57xx-evm bb-wl18xx-firmware bb-wlan0-defaults bluetooth bluez firmware-atheros firmware-brcm80211 firmware-libertas firmware-mediatek firmware-realtek hostapd ncal nginx nginx-common rfkill wireguard-tools firmware-ti-connectivity wget
+sudo apt autoremove
 ```
 
 ## Clean runtime
@@ -85,6 +86,8 @@ services:
     volumes:
       - ./node-red/data:/data
       - ./node-red/settings.js:/data/settings.js:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - edge
 

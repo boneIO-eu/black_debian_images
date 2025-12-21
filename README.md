@@ -73,10 +73,9 @@ sudo systemctl disable --now apt-daily.timer
 ## Docker section
 
 ```
-mkdir -p ~/docker/nodered/data
 mkdir ~/docker/nodered/node-red
 mkdir ~/docker/nodered/nginx
-mkdir -p /home/boneio/docker/nodered && \
+mkdir -p /home/boneio/docker/nodered/data && \
 tee ~/docker/nodered/docker-compose.yaml <<'EOF'
 services:
   node-red:

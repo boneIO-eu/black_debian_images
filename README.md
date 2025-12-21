@@ -85,7 +85,7 @@ services:
     environment:
       TZ: Europe/Warsaw
     volumes:
-      - ./data:/data
+      - ./node-red/data:/data
       - ./node-red/settings.js:/data/settings.js:ro
     networks:
       - edge
@@ -107,7 +107,64 @@ services:
 networks:
   edge:
 EOF
-cd ~/docker/nodered/
+mkdir -p ~/docker/nodered/node-red && \
+tee ~/docker/nodered/node-red/settings.js <<EOF
+module.exports = {
+  httpAdminRoot: "/nodered",
+  httpNodeRoot: "/nodered",
+  ui: { path: "ui" },
+};
+EOF
+
+mkdir -p /home/boneio/docker/nodered/nginx && \
+tee /home/boneio/docker/nodered/nginx/default.conf <<'EOF'
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    '' close;
+}
+
+upstream boneio {
+    server host.docker.internal:8090;
+}
+
+upstream nodered {
+    server node-red:1880;
+}
+
+server {
+    listen 80;
+
+    # Endpoint for frontend to check if Node-RED is available
+    location = /nodered-status {
+        default_type application/json;
+        add_header X-NodeRed-Available "true" always;
+        add_header Access-Control-Expose-Headers "X-NodeRed-Available" always;
+        return 200 '{"available": true}';
+    }
+
+    location /nodered/ {
+        proxy_pass http://nodered;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        add_header X-NodeRed-Available "true" always;
+    }
+
+    location / {
+        proxy_pass http://boneio;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+EOF
+
 docker-compose up
 ```
 

@@ -177,9 +177,6 @@ SystemKeepFree=300M
 SystemMaxFileSize=50M
 MaxRetentionSec=2weeks
 ```
-SystemMaxFileSize=50M
-MaxRetentionSec=2weeks
-```
 
 ### MOSQUITTO
 

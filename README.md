@@ -80,7 +80,7 @@ mkdir -p /home/boneio/docker/nodered && \
 tee ~/docker/nodered/docker-compose.yaml <<'EOF'
 services:
   node-red:
-    image: nodered/node-red:4.1.2-22
+    image: nodered/node-red:4.1.2-22-minimal
     restart: unless-stopped
     environment:
       TZ: Europe/Warsaw

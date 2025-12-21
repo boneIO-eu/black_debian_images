@@ -73,7 +73,6 @@ sudo systemctl disable --now apt-daily.timer
 ## Docker section
 
 ```
-usermod -aG docker boneio
 mkdir -p ~/docker/nodered/data
 mkdir ~/docker/nodered/node-red
 mkdir ~/docker/nodered/nginx

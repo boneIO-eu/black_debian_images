@@ -186,6 +186,6 @@ listener 1883
 password_file /etc/mosquitto/passwd
 EOF
 
-sudo chown mosquitto:mosquitto /etc/mosquitto/passwd /etc/mosquitto/conf.d/boneio.conf
 sudo mosquitto_passwd -c -b /etc/mosquitto/passwd boneio boneio123
+sudo chmod o+r /etc/mosquitto/passwd /etc/mosquitto/conf.d/boneio.conf
 ```

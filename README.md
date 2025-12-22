@@ -187,5 +187,7 @@ password_file /etc/mosquitto/passwd
 EOF
 
 sudo mosquitto_passwd -c -b /etc/mosquitto/passwd boneio boneio123
+sudo mosquitto_passwd -c -b /etc/mosquitto/passwd homeassistant boneio123
+sudo mosquitto_passwd -c -b /etc/mosquitto/passwd mqtt boneio123
 sudo chmod o+r /etc/mosquitto/passwd /etc/mosquitto/conf.d/boneio.conf
 ```

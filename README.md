@@ -199,5 +199,5 @@ boneio ALL=(ALL) NOPASSWD: /usr/bin/mosquitto_passwd -b /etc/mosquitto/passwd mq
 boneio ALL=(ALL) NOPASSWD: /bin/systemctl reload mosquitto
 EOF
 sudo chmod 0440 /etc/sudoers.d/boneio
-sudo chmod o+r /etc/mosquitto/passwd /etc/mosquitto/conf.d/boneio.conf
+sudo chmod 0700 /etc/mosquitto/passwd /etc/mosquitto/conf.d/boneio.conf
 ```

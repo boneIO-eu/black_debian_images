@@ -163,6 +163,14 @@ server {
 }
 EOF
 
+echo '{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  }
+}' | sudo tee /etc/docker/daemon.json
+sudo systemctl restart docker
 docker-compose up
 ```
 

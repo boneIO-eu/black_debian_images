@@ -187,11 +187,11 @@ password_file /etc/mosquitto/passwd
 EOF
 
 sudo mosquitto_passwd -c -b /etc/mosquitto/passwd boneio boneio123
-sudo mosquitto_passwd -c -b /etc/mosquitto/passwd homeassistant boneio123
-sudo mosquitto_passwd -c -b /etc/mosquitto/passwd mqtt boneio123
+sudo mosquitto_passwd -b /etc/mosquitto/passwd homeassistant boneio123
+sudo mosquitto_passwd -b /etc/mosquitto/passwd mqtt boneio123
 sudo tee /etc/sudoers.d/boneio <<'EOF'
 # Allow mosquitto_passwd command for password file
-boneio ALL=(ALL) NOPASSWD: /usr/bin/mosquitto_passwd -b /etc/mosquitto/passwd boneio boneio123
+boneio ALL=(ALL) NOPASSWD: /usr/bin/mosquitto_passwd -c -b /etc/mosquitto/passwd boneio boneio123
 boneio ALL=(ALL) NOPASSWD: /usr/bin/mosquitto_passwd -b /etc/mosquitto/passwd homeassistant boneio123
 boneio ALL=(ALL) NOPASSWD: /usr/bin/mosquitto_passwd -b /etc/mosquitto/passwd mqtt boneio123
 

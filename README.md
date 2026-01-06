@@ -25,13 +25,14 @@ ufw_allow_ssh=yes
 sudo ufw allow 1883
 sudo ufw allow 8090
 sudo ufw allow 8091
+sudo ufw logging off
 ```
 
 ## APT Install section
 
 ```
 sudo apt update
-sudo apt install -y libopenjp2-7-dev python3-venv libjpeg-dev docker-compose docker.io fonts-dejavu-core fonts-dejavu-extra libffi-dev libfreetype-dev libtiff6 libxcb1 mosquitto
+sudo apt install -y libopenjp2-7-dev python3-venv libjpeg-dev docker-compose docker.io fonts-dejavu-core fonts-dejavu-extra libffi-dev libfreetype-dev libtiff6 libxcb1 mosquitto log2ram
 usermod -aG docker boneio
 exit # and relogin
 ```
@@ -213,6 +214,9 @@ boneio ALL=(ALL) NOPASSWD: /usr/bin/mosquitto_passwd -b /etc/mosquitto/passwd mq
 # Allow mosquitto service reload
 boneio ALL=(ALL) NOPASSWD: /bin/systemctl reload mosquitto
 boneio ALL=(ALL) NOPASSWD: /usr/bin/hostnamectl set-hostname *
+
+boneio ALL=(ALL) NOPASSWD: /sbin/reboot
+boneio ALL=(ALL) NOPASSWD: /sbin/shutdown -h now
 EOF
 sudo chmod 0440 /etc/sudoers.d/boneio
 sudo chmod 0700 /etc/mosquitto/passwd /etc/mosquitto/conf.d/boneio.conf

@@ -319,10 +319,16 @@ log_info "   BoneIO application installed"
 # =============================================================================
 log_info "9/10: Building and installing Device Tree Overlay..."
 cd /opt/source
-if [ ! -d "black-pins-overlay" ]; then
+if [ -d "black-pins-overlay" ]; then
+    log_info "   Updating existing overlay repo..."
+    cd black-pins-overlay
+    git stash 2>/dev/null || true
+    git pull --ff-only origin main || git pull --ff-only origin master || true
+else
+    log_info "   Cloning overlay repo..."
     git clone https://github.com/boneIO-eu/black-pins-overlay.git
+    cd black-pins-overlay
 fi
-cd black-pins-overlay
 chmod +x build_boneio_black_pins.sh Makefile
 ./build_boneio_black_pins.sh
 

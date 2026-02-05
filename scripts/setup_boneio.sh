@@ -249,16 +249,21 @@ log_info "   Journald configured"
 # STEP 7: Mosquitto configuration
 # =============================================================================
 log_info "7/10: Configuring Mosquitto..."
+
+# Create password file with correct permissions BEFORE adding users
+touch /etc/mosquitto/passwd
+chmod 0600 /etc/mosquitto/passwd
+chown mosquitto:mosquitto /etc/mosquitto/passwd
+
 cat > /etc/mosquitto/conf.d/boneio.conf << 'EOF'
 listener 1883
 password_file /etc/mosquitto/passwd
 EOF
+chmod 0600 /etc/mosquitto/conf.d/boneio.conf
 
-mosquitto_passwd -c -b /etc/mosquitto/passwd boneio boneio123
+mosquitto_passwd -b /etc/mosquitto/passwd boneio boneio123
 mosquitto_passwd -b /etc/mosquitto/passwd homeassistant boneio123
 mosquitto_passwd -b /etc/mosquitto/passwd mqtt boneio123
-
-chmod 0700 /etc/mosquitto/passwd /etc/mosquitto/conf.d/boneio.conf
 
 # Sudoers for boneio user
 cat > /etc/sudoers.d/boneio << 'EOF'

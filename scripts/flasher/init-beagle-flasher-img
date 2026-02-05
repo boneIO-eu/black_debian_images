@@ -1,0 +1,275 @@
+#!/bin/bash -e
+
+if ! id | grep -q root; then
+	echo "must be run as root:"
+	exit
+fi
+
+version_message="2.0.0, dd-based flasher with xz decompression support..."
+
+# Configuration
+IMAGE_PARTITION="/dev/mmcblk0p2"
+IMAGE_FILE="rootfs.img"
+IMAGE_FILE_XZ="rootfs.img.xz"
+DESTINATION="/dev/mmcblk1"
+USE_XZ="false"
+
+cylon_leds() {
+	local leds_base=/sys/class/leds/beaglebone\:green\:usr
+	if [ -e ${leds_base}0/trigger ] ; then
+		echo none > ${leds_base}0/trigger || true
+		echo none > ${leds_base}1/trigger || true
+		echo none > ${leds_base}2/trigger || true
+		echo none > ${leds_base}3/trigger || true
+
+		STATE=1
+		while : ; do
+		case $STATE in
+			1)
+				echo 1 > ${leds_base}0/brightness || true
+				echo 0 > ${leds_base}1/brightness || true
+				STATE=2
+				;;
+			2)
+				echo 1 > ${leds_base}1/brightness || true
+				echo 0 > ${leds_base}0/brightness || true
+				STATE=3
+				;;
+			3)
+				echo 1 > ${leds_base}2/brightness || true
+				echo 0 > ${leds_base}1/brightness || true
+				STATE=4
+				;;
+			4)
+				echo 1 > ${leds_base}3/brightness || true
+				echo 0 > ${leds_base}2/brightness || true
+				STATE=5
+				;;
+			5)
+				echo 1 > ${leds_base}2/brightness || true
+				echo 0 > ${leds_base}3/brightness || true
+				STATE=6
+				;;
+			6)
+				echo 1 > ${leds_base}1/brightness || true
+				echo 0 > ${leds_base}2/brightness || true
+				STATE=1
+				;;
+			*)
+				echo 1 > ${leds_base}0/brightness || true
+				echo 0 > ${leds_base}1/brightness || true
+				STATE=2
+				;;
+		esac
+		sleep 0.1
+		done
+	fi
+}
+
+reset_leds() {
+	if [ "x${has_usr_leds}" = "xenable" ] ; then
+		if [ -e /proc/$CYLON_PID ]; then
+			kill $CYLON_PID > /dev/null 2>&1
+		fi
+
+		leds_base=/sys/class/leds/beaglebone\:green\:usr
+		if [ -e ${leds_base}0/trigger ] ; then
+			echo heartbeat > ${leds_base}0/trigger || true
+			echo mmc0 > ${leds_base}1/trigger || true
+			echo none > ${leds_base}2/trigger || true
+			echo mmc1 > ${leds_base}3/trigger || true
+		fi
+	fi
+}
+
+all_leds_on() {
+	leds_base=/sys/class/leds/beaglebone\:green\:usr
+	if [ -e ${leds_base}0/trigger ] ; then
+		echo none > ${leds_base}0/trigger || true
+		echo none > ${leds_base}1/trigger || true
+		echo none > ${leds_base}2/trigger || true
+		echo none > ${leds_base}3/trigger || true
+		echo 1 > ${leds_base}0/brightness || true
+		echo 1 > ${leds_base}1/brightness || true
+		echo 1 > ${leds_base}2/brightness || true
+		echo 1 > ${leds_base}3/brightness || true
+	fi
+}
+
+broadcast () {
+	if [ "x${message}" != "x" ] ; then
+		echo "${message}"
+	fi
+}
+
+# Progress monitor - prints elapsed time every 30 seconds
+progress_monitor() {
+	local start_time=$(date +%s)
+	while true; do
+		sleep 30
+		local elapsed=$(($(date +%s) - start_time))
+		local mins=$((elapsed / 60))
+		local secs=$((elapsed % 60))
+		echo "INFO: Still writing... (${mins}m ${secs}s elapsed)"
+	done
+}
+
+stop_progress_monitor() {
+	if [ -n "$PROGRESS_PID" ] && [ -e /proc/$PROGRESS_PID ]; then
+		kill $PROGRESS_PID > /dev/null 2>&1 || true
+	fi
+	PROGRESS_PID=""
+}
+
+write_failure () {
+	message="ERROR: writing to [${DESTINATION}] failed..." ; broadcast
+	if [ "x${has_usr_leds}" = "xenable" ] ; then
+		if [ -e /proc/$CYLON_PID ]; then
+			kill $CYLON_PID > /dev/null 2>&1
+		fi
+		# All LEDs heartbeat = error
+		leds_base=/sys/class/leds/beaglebone\:green\:usr
+		if [ -e ${leds_base}0/trigger ] ; then
+			echo heartbeat > ${leds_base}0/trigger || true
+			echo heartbeat > ${leds_base}1/trigger || true
+			echo heartbeat > ${leds_base}2/trigger || true
+			echo heartbeat > ${leds_base}3/trigger || true
+		fi
+	fi
+	exit 1
+}
+
+check_system () {
+	message="--------------------------------------------------------------------------------" ; broadcast
+	message="INFO: DD-based eMMC flasher from IMG file"                                        ; broadcast
+	message="Version: [${version_message}]"                                                    ; broadcast
+	message="--------------------------------------------------------------------------------" ; broadcast
+
+	message="INFO: Waiting for system to stabilize..."                                         ; broadcast
+	for i in 5 4 3 2 1; do
+		message="$i" ; broadcast
+		sleep 1
+	done
+	message="--------------------------------------------------------------------------------" ; broadcast
+
+	has_usr_leds="enable"
+
+	if [ "x${has_usr_leds}" = "xenable" ] ; then
+		cylon_leds & CYLON_PID=$!
+	fi
+
+	# Check destination exists
+	if [ ! -b "${DESTINATION}" ] ; then
+		message="ERROR: [${DESTINATION}] does not exist" ; broadcast
+		write_failure
+	fi
+	message="INFO: Destination [${DESTINATION}] OK" ; broadcast
+
+	# Check image partition exists
+	if [ ! -b "${IMAGE_PARTITION}" ] ; then
+		message="ERROR: [${IMAGE_PARTITION}] does not exist" ; broadcast
+		write_failure
+	fi
+	message="INFO: Image partition [${IMAGE_PARTITION}] OK" ; broadcast
+}
+
+mount_image_partition () {
+	message="INFO: Mounting image partition..." ; broadcast
+	mkdir -p /mnt/image || true
+	mount -o ro ${IMAGE_PARTITION} /mnt/image || write_failure
+
+	# Check for compressed image first (preferred)
+	if [ -f "/mnt/image/${IMAGE_FILE_XZ}" ] ; then
+		USE_XZ="true"
+		IMAGE_SIZE=$(stat -c%s "/mnt/image/${IMAGE_FILE_XZ}")
+		message="INFO: Found compressed image: /mnt/image/${IMAGE_FILE_XZ} ($(numfmt --to=iec ${IMAGE_SIZE}))" ; broadcast
+		message="INFO: Will decompress on-the-fly with xzcat" ; broadcast
+	elif [ -f "/mnt/image/${IMAGE_FILE}" ] ; then
+		USE_XZ="false"
+		IMAGE_SIZE=$(stat -c%s "/mnt/image/${IMAGE_FILE}")
+		message="INFO: Found image: /mnt/image/${IMAGE_FILE} ($(numfmt --to=iec ${IMAGE_SIZE}))" ; broadcast
+	else
+		message="ERROR: No image file found!" ; broadcast
+		message="INFO: Looking for ${IMAGE_FILE_XZ} or ${IMAGE_FILE}" ; broadcast
+		message="INFO: Available files:" ; broadcast
+		ls -la /mnt/image/ || true
+		write_failure
+	fi
+	message="--------------------------------------------------------------------------------" ; broadcast
+}
+
+flash_emmc () {
+	message="INFO: Flashing eMMC..." ; broadcast
+	
+	# Start progress monitor
+	progress_monitor & PROGRESS_PID=$!
+	
+	if [ "${USE_XZ}" = "true" ] ; then
+		message="INFO: [xzcat /mnt/image/${IMAGE_FILE_XZ} | dd of=${DESTINATION} bs=4M]" ; broadcast
+		message="INFO: Decompressing and writing (this takes 4-6 minutes)..." ; broadcast
+		message="--------------------------------------------------------------------------------" ; broadcast
+		xzcat "/mnt/image/${IMAGE_FILE_XZ}" | dd of="${DESTINATION}" bs=4M status=progress || write_failure
+	else
+		message="INFO: [dd if=/mnt/image/${IMAGE_FILE} of=${DESTINATION} bs=4M status=progress]" ; broadcast
+		message="--------------------------------------------------------------------------------" ; broadcast
+		dd if="/mnt/image/${IMAGE_FILE}" of="${DESTINATION}" bs=4M status=progress || write_failure
+	fi
+	
+	# Stop progress monitor
+	stop_progress_monitor
+
+	message="--------------------------------------------------------------------------------" ; broadcast
+	message="INFO: Write complete, syncing..." ; broadcast
+	sync
+	blockdev --flushbufs ${DESTINATION} || true
+
+	message="INFO: Verifying write (reading back)..." ; broadcast
+	dd if=${DESTINATION} of=/dev/null bs=4M count=100 status=progress || true
+	sync
+
+	message="--------------------------------------------------------------------------------" ; broadcast
+	message="INFO: Flash complete!" ; broadcast
+}
+
+cleanup_and_shutdown () {
+	message="INFO: Unmounting image partition..." ; broadcast
+	umount /mnt/image || umount -l /mnt/image || true
+
+	if [ "x${has_usr_leds}" = "xenable" ] ; then
+		reset_leds
+	fi
+
+	# All LEDs on = success
+	all_leds_on
+
+	message="--------------------------------------------------------------------------------" ; broadcast
+	message="SUCCESS: eMMC flashed successfully!"                                              ; broadcast
+	message="INFO: System will shutdown in 5 seconds..."                                       ; broadcast
+	message="INFO: Remove SD card and power on to boot from eMMC"                              ; broadcast
+	message="--------------------------------------------------------------------------------" ; broadcast
+
+	for i in 5 4 3 2 1; do
+		message="$i" ; broadcast
+		sleep 1
+	done
+
+	# Check if we're running as init
+	unset are_we_flasher
+	are_we_flasher=$(grep init-beagle-flasher /proc/cmdline || true)
+	if [ ! "x${are_we_flasher}" = "x" ] ; then
+		if [ -f /proc/sysrq-trigger ] ; then
+			echo s > /proc/sysrq-trigger
+			echo o > /proc/sysrq-trigger
+		fi
+		exec /sbin/init
+		exit
+	fi
+
+	poweroff
+}
+
+# Main
+check_system
+mount_image_partition
+flash_emmc
+cleanup_and_shutdown

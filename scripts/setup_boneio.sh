@@ -49,6 +49,8 @@ log_info "   UFW configured"
 # STEP 2: APT Install
 # =============================================================================
 log_info "2/10: Installing required packages..."
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
 apt update
 apt install -y \
     libopenjp2-7-dev \

@@ -5,14 +5,11 @@ if ! id | grep -q root; then
 	exit
 fi
 
-version_message="2.0.0, dd-based flasher with xz decompression support..."
+version_message="3.1.0, dd-based flasher - reads /boneio-emmc.img from root filesystem..."
 
 # Configuration
-IMAGE_PARTITION="/dev/mmcblk0p2"
-IMAGE_FILE="rootfs.img"
-IMAGE_FILE_XZ="rootfs.img.xz"
+IMAGE_FILE="/boneio-emmc.img"
 DESTINATION="/dev/mmcblk1"
-USE_XZ="false"
 
 cylon_leds() {
 	local leds_base=/sys/class/leds/beaglebone\:green\:usr
@@ -28,37 +25,47 @@ cylon_leds() {
 			1)
 				echo 1 > ${leds_base}0/brightness || true
 				echo 0 > ${leds_base}1/brightness || true
+				echo 0 > ${leds_base}2/brightness || true
+				echo 0 > ${leds_base}3/brightness || true
 				STATE=2
 				;;
 			2)
-				echo 1 > ${leds_base}1/brightness || true
 				echo 0 > ${leds_base}0/brightness || true
+				echo 1 > ${leds_base}1/brightness || true
+				echo 0 > ${leds_base}2/brightness || true
+				echo 0 > ${leds_base}3/brightness || true
 				STATE=3
 				;;
 			3)
-				echo 1 > ${leds_base}2/brightness || true
+				echo 0 > ${leds_base}0/brightness || true
 				echo 0 > ${leds_base}1/brightness || true
+				echo 1 > ${leds_base}2/brightness || true
+				echo 0 > ${leds_base}3/brightness || true
 				STATE=4
 				;;
 			4)
-				echo 1 > ${leds_base}3/brightness || true
+				echo 0 > ${leds_base}0/brightness || true
+				echo 0 > ${leds_base}1/brightness || true
 				echo 0 > ${leds_base}2/brightness || true
+				echo 1 > ${leds_base}3/brightness || true
 				STATE=5
 				;;
 			5)
+				echo 0 > ${leds_base}0/brightness || true
+				echo 0 > ${leds_base}1/brightness || true
 				echo 1 > ${leds_base}2/brightness || true
 				echo 0 > ${leds_base}3/brightness || true
 				STATE=6
 				;;
 			6)
+				echo 0 > ${leds_base}0/brightness || true
 				echo 1 > ${leds_base}1/brightness || true
 				echo 0 > ${leds_base}2/brightness || true
+				echo 0 > ${leds_base}3/brightness || true
 				STATE=1
 				;;
 			*)
-				echo 1 > ${leds_base}0/brightness || true
-				echo 0 > ${leds_base}1/brightness || true
-				STATE=2
+				STATE=1
 				;;
 		esac
 		sleep 0.1
@@ -66,29 +73,9 @@ cylon_leds() {
 	fi
 }
 
-reset_leds() {
-	if [ "x${has_usr_leds}" = "xenable" ] ; then
-		if [ -e /proc/$CYLON_PID ]; then
-			kill $CYLON_PID > /dev/null 2>&1
-		fi
-
-		leds_base=/sys/class/leds/beaglebone\:green\:usr
-		if [ -e ${leds_base}0/trigger ] ; then
-			echo heartbeat > ${leds_base}0/trigger || true
-			echo mmc0 > ${leds_base}1/trigger || true
-			echo none > ${leds_base}2/trigger || true
-			echo mmc1 > ${leds_base}3/trigger || true
-		fi
-	fi
-}
-
 all_leds_on() {
-	leds_base=/sys/class/leds/beaglebone\:green\:usr
+	local leds_base=/sys/class/leds/beaglebone\:green\:usr
 	if [ -e ${leds_base}0/trigger ] ; then
-		echo none > ${leds_base}0/trigger || true
-		echo none > ${leds_base}1/trigger || true
-		echo none > ${leds_base}2/trigger || true
-		echo none > ${leds_base}3/trigger || true
 		echo 1 > ${leds_base}0/brightness || true
 		echo 1 > ${leds_base}1/brightness || true
 		echo 1 > ${leds_base}2/brightness || true
@@ -100,6 +87,42 @@ broadcast () {
 	if [ "x${message}" != "x" ] ; then
 		echo "${message}"
 	fi
+}
+
+stabilize_system () {
+	message="INFO: Giving system time to stabilize..." ; broadcast
+
+	# Mount essential pseudo-filesystems (needed when running as init)
+	if [ ! -e /proc/cmdline ] ; then
+		message="INFO: Mounting /proc" ; broadcast
+		mount -t proc proc /proc
+	fi
+	if [ ! -e /sys/class ] ; then
+		message="INFO: Mounting /sys" ; broadcast
+		mount -t sysfs sysfs /sys
+	fi
+	if [ ! -e /dev/mmcblk0 ] ; then
+		message="INFO: Mounting /dev" ; broadcast
+		mount -t devtmpfs devtmpfs /dev
+	fi
+
+	message="INFO: Preparing /tmp" ; broadcast
+	mount -t tmpfs tmpfs /tmp 2>/dev/null || true
+
+	if [ -f /proc/sys/vm/min_free_kbytes ] ; then
+		message="INFO: [sysctl -w vm.min_free_kbytes=16384]" ; broadcast
+		sysctl -w vm.min_free_kbytes=16384 || true
+	fi
+
+	# Load MMC/eMMC kernel modules (may be needed if not built-in)
+	message="INFO: Loading MMC kernel modules..." ; broadcast
+	modprobe mmc_block 2>/dev/null || true
+	modprobe omap_hsmmc 2>/dev/null || true
+	modprobe sdhci-omap 2>/dev/null || true
+
+	sleep 3
+	message="INFO: System stabilized" ; broadcast
+	message="--------------------------------------------------------------------------------" ; broadcast
 }
 
 # Progress monitor - prints elapsed time every 30 seconds
@@ -123,34 +146,36 @@ stop_progress_monitor() {
 
 write_failure () {
 	message="ERROR: writing to [${DESTINATION}] failed..." ; broadcast
+	stop_progress_monitor
+
 	if [ "x${has_usr_leds}" = "xenable" ] ; then
-		if [ -e /proc/$CYLON_PID ]; then
-			kill $CYLON_PID > /dev/null 2>&1
+		if [ -n "$CYLON_PID" ]; then
+			kill $CYLON_PID > /dev/null 2>&1 || true
 		fi
-		# All LEDs heartbeat = error
+		# Blink all LEDs as error indicator
 		leds_base=/sys/class/leds/beaglebone\:green\:usr
-		if [ -e ${leds_base}0/trigger ] ; then
-			echo heartbeat > ${leds_base}0/trigger || true
-			echo heartbeat > ${leds_base}1/trigger || true
-			echo heartbeat > ${leds_base}2/trigger || true
-			echo heartbeat > ${leds_base}3/trigger || true
-		fi
+		while : ; do
+			echo 1 > ${leds_base}0/brightness || true
+			echo 1 > ${leds_base}1/brightness || true
+			echo 1 > ${leds_base}2/brightness || true
+			echo 1 > ${leds_base}3/brightness || true
+			sleep 0.5
+			echo 0 > ${leds_base}0/brightness || true
+			echo 0 > ${leds_base}1/brightness || true
+			echo 0 > ${leds_base}2/brightness || true
+			echo 0 > ${leds_base}3/brightness || true
+			sleep 0.5
+		done
 	fi
 	exit 1
 }
 
-check_system () {
-	message="--------------------------------------------------------------------------------" ; broadcast
-	message="INFO: DD-based eMMC flasher from IMG file"                                        ; broadcast
-	message="Version: [${version_message}]"                                                    ; broadcast
-	message="--------------------------------------------------------------------------------" ; broadcast
-
-	message="INFO: Waiting for system to stabilize..."                                         ; broadcast
-	for i in 5 4 3 2 1; do
-		message="$i" ; broadcast
-		sleep 1
-	done
-	message="--------------------------------------------------------------------------------" ; broadcast
+startup_checks () {
+	message="INFO: ===============================================" ; broadcast
+	message="INFO: DD-based eMMC flasher ${version_message}" ; broadcast
+	message="INFO: ===============================================" ; broadcast
+	message="INFO: Image file: ${IMAGE_FILE}" ; broadcast
+	message="INFO: ===============================================" ; broadcast
 
 	has_usr_leds="enable"
 
@@ -158,41 +183,36 @@ check_system () {
 		cylon_leds & CYLON_PID=$!
 	fi
 
+	# Wait for eMMC device to appear (may take a few seconds at boot)
+	message="INFO: Waiting for eMMC device..." ; broadcast
+	WAIT_COUNT=0
+	while [ ! -b "${DESTINATION}" ] && [ $WAIT_COUNT -lt 30 ]; do
+		sleep 1
+		WAIT_COUNT=$((WAIT_COUNT + 1))
+		echo "INFO: Waiting for ${DESTINATION}... (${WAIT_COUNT}s)"
+	done
+
 	# Check destination exists
 	if [ ! -b "${DESTINATION}" ] ; then
 		message="ERROR: [${DESTINATION}] does not exist" ; broadcast
+		message="INFO: Available block devices:" ; broadcast
+		ls -la /dev/mmcblk* /dev/sd* 2>/dev/null || true
+		lsblk 2>/dev/null || true
 		write_failure
 	fi
 	message="INFO: Destination [${DESTINATION}] OK" ; broadcast
-
-	# Check image partition exists
-	if [ ! -b "${IMAGE_PARTITION}" ] ; then
-		message="ERROR: [${IMAGE_PARTITION}] does not exist" ; broadcast
-		write_failure
-	fi
-	message="INFO: Image partition [${IMAGE_PARTITION}] OK" ; broadcast
 }
 
-mount_image_partition () {
-	message="INFO: Mounting image partition..." ; broadcast
-	mkdir -p /mnt/image || true
-	mount -o ro ${IMAGE_PARTITION} /mnt/image || write_failure
+find_image_file () {
+	message="INFO: Looking for image file..." ; broadcast
 
-	# Check for compressed image first (preferred)
-	if [ -f "/mnt/image/${IMAGE_FILE_XZ}" ] ; then
-		USE_XZ="true"
-		IMAGE_SIZE=$(stat -c%s "/mnt/image/${IMAGE_FILE_XZ}")
-		message="INFO: Found compressed image: /mnt/image/${IMAGE_FILE_XZ} ($(numfmt --to=iec ${IMAGE_SIZE}))" ; broadcast
-		message="INFO: Will decompress on-the-fly with xzcat" ; broadcast
-	elif [ -f "/mnt/image/${IMAGE_FILE}" ] ; then
-		USE_XZ="false"
-		IMAGE_SIZE=$(stat -c%s "/mnt/image/${IMAGE_FILE}")
-		message="INFO: Found image: /mnt/image/${IMAGE_FILE} ($(numfmt --to=iec ${IMAGE_SIZE}))" ; broadcast
+	if [ -f "${IMAGE_FILE}" ] ; then
+		IMAGE_SIZE=$(stat -c%s "${IMAGE_FILE}")
+		message="INFO: Found image: ${IMAGE_FILE} ($(numfmt --to=iec ${IMAGE_SIZE}))" ; broadcast
 	else
-		message="ERROR: No image file found!" ; broadcast
-		message="INFO: Looking for ${IMAGE_FILE_XZ} or ${IMAGE_FILE}" ; broadcast
-		message="INFO: Available files:" ; broadcast
-		ls -la /mnt/image/ || true
+		message="ERROR: Image file not found: ${IMAGE_FILE}" ; broadcast
+		message="INFO: Available files in /:" ; broadcast
+		ls -la /*.img 2>/dev/null || echo "No .img files found"
 		write_failure
 	fi
 	message="--------------------------------------------------------------------------------" ; broadcast
@@ -200,21 +220,14 @@ mount_image_partition () {
 
 flash_emmc () {
 	message="INFO: Flashing eMMC..." ; broadcast
-	
+
 	# Start progress monitor
 	progress_monitor & PROGRESS_PID=$!
-	
-	if [ "${USE_XZ}" = "true" ] ; then
-		message="INFO: [xzcat /mnt/image/${IMAGE_FILE_XZ} | dd of=${DESTINATION} bs=4M]" ; broadcast
-		message="INFO: Decompressing and writing (this takes 4-6 minutes)..." ; broadcast
-		message="--------------------------------------------------------------------------------" ; broadcast
-		xzcat "/mnt/image/${IMAGE_FILE_XZ}" | dd of="${DESTINATION}" bs=4M status=progress || write_failure
-	else
-		message="INFO: [dd if=/mnt/image/${IMAGE_FILE} of=${DESTINATION} bs=4M status=progress]" ; broadcast
-		message="--------------------------------------------------------------------------------" ; broadcast
-		dd if="/mnt/image/${IMAGE_FILE}" of="${DESTINATION}" bs=4M status=progress || write_failure
-	fi
-	
+
+	message="INFO: [dd if=${IMAGE_FILE} of=${DESTINATION} bs=4M status=progress]" ; broadcast
+	message="--------------------------------------------------------------------------------" ; broadcast
+	dd if="${IMAGE_FILE}" of="${DESTINATION}" bs=4M status=progress || write_failure
+
 	# Stop progress monitor
 	stop_progress_monitor
 
@@ -223,7 +236,7 @@ flash_emmc () {
 	sync
 	blockdev --flushbufs ${DESTINATION} || true
 
-	message="INFO: Verifying write (reading back)..." ; broadcast
+	message="INFO: Forcing eMMC readback to flush write cache..." ; broadcast
 	dd if=${DESTINATION} of=/dev/null bs=4M count=100 status=progress || true
 	sync
 
@@ -231,45 +244,171 @@ flash_emmc () {
 	message="INFO: Flash complete!" ; broadcast
 }
 
-cleanup_and_shutdown () {
-	message="INFO: Unmounting image partition..." ; broadcast
-	umount /mnt/image || umount -l /mnt/image || true
+fix_emmc_rootfs () {
+	message="INFO: Fixing eMMC rootfs configuration..." ; broadcast
 
-	if [ "x${has_usr_leds}" = "xenable" ] ; then
-		reset_leds
+	# Re-read partition table after dd
+	message="INFO: Re-reading partition table on ${DESTINATION}..." ; broadcast
+	partprobe ${DESTINATION} 2>/dev/null || true
+	blockdev --rereadpt ${DESTINATION} 2>/dev/null || true
+	sleep 2
+
+	# Find ext4 partition on eMMC (rootfs)
+	EMMC_ROOTFS=""
+	media_rootfs=""
+	for i in 1 2 3; do
+		if [ -b "${DESTINATION}p${i}" ]; then
+			PART="${DESTINATION}p${i}"
+		elif [ -b "${DESTINATION}${i}" ]; then
+			PART="${DESTINATION}${i}"
+		else
+			continue
+		fi
+
+		FS_TYPE=$(blkid -s TYPE -o value "$PART" 2>/dev/null || echo "unknown")
+		if [ "$FS_TYPE" = "ext4" ]; then
+			EMMC_ROOTFS="$PART"
+			media_rootfs="$i"
+			break
+		fi
+	done
+
+	if [ -z "$EMMC_ROOTFS" ]; then
+		message="WARNING: Could not find eMMC rootfs partition, skipping fstab fix" ; broadcast
+		return
 	fi
+
+	message="INFO: Found eMMC rootfs: ${EMMC_ROOTFS} (partition ${media_rootfs})" ; broadcast
+
+	mkdir -p /tmp/rootfs/ || true
+	if ! mount "${EMMC_ROOTFS}" /tmp/rootfs/ -o async,noatime 2>/dev/null; then
+		message="WARNING: Could not mount eMMC rootfs" ; broadcast
+		return
+	fi
+
+	# Generate /etc/fstab with correct eMMC device paths
+	message="INFO: Generating: /etc/fstab" ; broadcast
+	echo "# /etc/fstab: static file system information." > /tmp/rootfs/etc/fstab
+	echo "#" >> /tmp/rootfs/etc/fstab
+	echo "${DESTINATION}p${media_rootfs}  /  ext4  noatime,errors=remount-ro  0  1" >> /tmp/rootfs/etc/fstab
+
+	if [ "x${media_rootfs}" = "x2" ] ; then
+		echo "${DESTINATION}p1  /boot/firmware vfat user,uid=1000,gid=1000,defaults 0 2" >> /tmp/rootfs/etc/fstab
+	fi
+
+	if [ "x${media_rootfs}" = "x3" ] ; then
+		echo "${DESTINATION}p1  /boot/firmware vfat user,uid=1000,gid=1000,defaults 0 2" >> /tmp/rootfs/etc/fstab
+		echo "${DESTINATION}p2       none    swap    sw      0       0" >> /tmp/rootfs/etc/fstab
+	fi
+
+	echo "debugfs  /sys/kernel/debug  debugfs  mode=755,uid=root,gid=gpio,defaults  0  0" >> /tmp/rootfs/etc/fstab
+	message="INFO: [cat /tmp/rootfs/etc/fstab]" ; broadcast
+	cat /tmp/rootfs/etc/fstab
+	message="--------------------------------------------------------------------------------" ; broadcast
+
+	# Disable flasher cmdline in eMMC uEnv.txt
+	if [ -f /tmp/rootfs/boot/uEnv.txt ]; then
+		sed -i -e 's:cmdline=init:#cmdline=init:g' /tmp/rootfs/boot/uEnv.txt
+		message="INFO: Disabled flasher cmdline in eMMC uEnv.txt" ; broadcast
+	fi
+
+	# Update generic-sys-mods if present
+	if [ -f /tmp/rootfs/etc/default/generic-sys-mods ] ; then
+		. /tmp/rootfs/etc/default/generic-sys-mods
+		echo "#This file is sourced by /usr/bin/bb-growpart" > /tmp/rootfs/etc/default/generic-sys-mods
+		echo "ROOT_DRIVE=${DESTINATION}" >> /tmp/rootfs/etc/default/generic-sys-mods
+		echo "ROOT_PARTITION=${ROOT_PARTITION}" >> /tmp/rootfs/etc/default/generic-sys-mods
+		echo "ARCH_SOC_MODULES=${ARCH_SOC_MODULES}" >> /tmp/rootfs/etc/default/generic-sys-mods
+		message="INFO: Updated generic-sys-mods" ; broadcast
+	fi
+
+	# Remove grow_partition service (not needed on eMMC)
+	if [ -f /tmp/rootfs/etc/systemd/system/multi-user.target.wants/grow_partition.service ] ; then
+		rm -rf /tmp/rootfs/etc/systemd/system/multi-user.target.wants/grow_partition.service || true
+		message="INFO: Removed grow_partition.service" ; broadcast
+	fi
+
+	# Remove pishrink resize2fs_once script (added by pishrink for SD card expand,
+	# but on eMMC it would resize the wrong device)
+	if [ -f /tmp/rootfs/etc/init.d/resize2fs_once ] ; then
+		rm -f /tmp/rootfs/etc/init.d/resize2fs_once || true
+		# Remove symlinks in rc*.d
+		rm -f /tmp/rootfs/etc/rc2.d/*resize2fs_once 2>/dev/null || true
+		rm -f /tmp/rootfs/etc/rc3.d/*resize2fs_once 2>/dev/null || true
+		rm -f /tmp/rootfs/etc/rc5.d/*resize2fs_once 2>/dev/null || true
+		message="INFO: Removed resize2fs_once (pishrink auto-expand)" ; broadcast
+	fi
+
+	# Replace rc.local with clean default (pishrink/BeagleBoard may have added
+	# fdisk/resize2fs/growpart commands that would operate on wrong device)
+	if [ -f /tmp/rootfs/etc/rc.local ] ; then
+		message="INFO: [cat /tmp/rootfs/etc/rc.local (before)]" ; broadcast
+		cat /tmp/rootfs/etc/rc.local
+		# Back up original and write clean rc.local
+		cp -f /tmp/rootfs/etc/rc.local /tmp/rootfs/etc/rc.local.bak.flasher
+		cat > /tmp/rootfs/etc/rc.local <<'RCEOF'
+#!/bin/sh -e
+#
+# rc.local - executed at the end of each multiuser runlevel
+#
+exit 0
+RCEOF
+		chmod +x /tmp/rootfs/etc/rc.local
+		message="INFO: Replaced rc.local with clean default" ; broadcast
+	fi
+
+	sync
+	umount /tmp/rootfs/ || umount -l /tmp/rootfs/ || true
+	message="INFO: eMMC rootfs configuration fixed" ; broadcast
+	message="--------------------------------------------------------------------------------" ; broadcast
+}
+
+cleanup_and_shutdown () {
+	message="INFO: Cleanup..." ; broadcast
+	sync
+	
+	# Stop cylon animation
+	if [ -n "$CYLON_PID" ]; then
+		kill $CYLON_PID > /dev/null 2>&1 || true
+	fi
+
+	message="" ; broadcast
+	message="INFO: ===============================================" ; broadcast
+	message="INFO: SUCCESS: eMMC flashed successfully!" ; broadcast
+	message="INFO: ===============================================" ; broadcast
+	message="INFO: Remove SD card and reboot" ; broadcast
+	message="INFO: ===============================================" ; broadcast
+	message="" ; broadcast
 
 	# All LEDs on = success
 	all_leds_on
+	
+	# Give user time to see success message
+	sleep 10
 
-	message="--------------------------------------------------------------------------------" ; broadcast
-	message="SUCCESS: eMMC flashed successfully!"                                              ; broadcast
-	message="INFO: System will shutdown in 5 seconds..."                                       ; broadcast
-	message="INFO: Remove SD card and power on to boot from eMMC"                              ; broadcast
-	message="--------------------------------------------------------------------------------" ; broadcast
+	sync
 
-	for i in 5 4 3 2 1; do
-		message="$i" ; broadcast
+	if [ -f /proc/sysrq-trigger ] ; then
+		message="INFO: Syncing and powering off via sysrq..." ; broadcast
+		echo s > /proc/sysrq-trigger
 		sleep 1
-	done
-
-	# Check if we're running as init
-	unset are_we_flasher
-	are_we_flasher=$(grep init-beagle-flasher /proc/cmdline || true)
-	if [ ! "x${are_we_flasher}" = "x" ] ; then
-		if [ -f /proc/sysrq-trigger ] ; then
-			echo s > /proc/sysrq-trigger
-			echo o > /proc/sysrq-trigger
-		fi
-		exec /sbin/init
-		exit
+		echo o > /proc/sysrq-trigger
 	fi
 
-	poweroff
+	# Fallback if sysrq did not work
+	sleep 5
+
+	# When running as init, try to hand off to real init
+	exec /sbin/init
+	# Should not reach here
+	halt -f
 }
 
-# Main
-check_system
-mount_image_partition
+### Main ###
+
+stabilize_system
+startup_checks
+find_image_file
 flash_emmc
+fix_emmc_rootfs
 cleanup_and_shutdown

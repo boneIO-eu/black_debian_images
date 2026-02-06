@@ -1,6 +1,6 @@
 #!/bin/bash
 ## BoneIO Black - Complete System Setup Script
-## Usage: curl -fsSL https://raw.githubusercontent.com/boneIO-eu/black_debian_images/main/scripts/setup_boneio.sh | sudo bash
+## Usage: curl -H 'Cache-Control: no-cache' -fsSL https://raw.githubusercontent.com/boneIO-eu/black_debian_images/main/scripts/setup_boneio.sh | sudo bash
 ##
 ## This script configures a fresh Debian 13 installation for BoneIO Black hardware.
 ## It will install all required packages, configure services, and prepare the system
@@ -27,9 +27,11 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 BONEIO_USER="${BONEIO_USER:-boneio}"
 BONEIO_HOME="/home/${BONEIO_USER}"
+SCRIPT_VERSION="2026-02-05.1"
 
 echo "================================================================================"
 echo "  BoneIO Black - System Setup"
+echo "  Version: ${SCRIPT_VERSION}"
 echo "================================================================================"
 echo "User: ${BONEIO_USER}"
 echo "Home: ${BONEIO_HOME}"

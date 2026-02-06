@@ -7,7 +7,7 @@ Este repozytorium zawiera narzędzia do budowy i flashowania obrazów Debian dla
 ### 1. Przygotowanie świeżego BBB (na urządzeniu)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/boneIO-eu/black_debian_images/main/scripts/setup_boneio.sh | sudo bash
+curl -H 'Cache-Control: no-cache' -fsSL https://raw.githubusercontent.com/boneIO-eu/black_debian_images/main/scripts/setup_boneio.sh | sudo bash
 ```
 
 Skrypt automatycznie:

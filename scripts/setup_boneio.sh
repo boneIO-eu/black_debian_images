@@ -104,6 +104,7 @@ apt remove -y \
     firmware-ti-connectivity \
     wget 2>/dev/null || true
 apt autoremove -y
+apt-get clean
 log_info "   Unnecessary packages removed"
 
 # =============================================================================

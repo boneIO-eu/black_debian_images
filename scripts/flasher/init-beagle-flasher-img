@@ -322,41 +322,6 @@ fix_emmc_rootfs () {
 		message="INFO: Updated generic-sys-mods" ; broadcast
 	fi
 
-	# Remove grow_partition service (not needed on eMMC)
-	if [ -f /tmp/rootfs/etc/systemd/system/multi-user.target.wants/grow_partition.service ] ; then
-		rm -rf /tmp/rootfs/etc/systemd/system/multi-user.target.wants/grow_partition.service || true
-		message="INFO: Removed grow_partition.service" ; broadcast
-	fi
-
-	# Remove pishrink resize2fs_once script (added by pishrink for SD card expand,
-	# but on eMMC it would resize the wrong device)
-	if [ -f /tmp/rootfs/etc/init.d/resize2fs_once ] ; then
-		rm -f /tmp/rootfs/etc/init.d/resize2fs_once || true
-		# Remove symlinks in rc*.d
-		rm -f /tmp/rootfs/etc/rc2.d/*resize2fs_once 2>/dev/null || true
-		rm -f /tmp/rootfs/etc/rc3.d/*resize2fs_once 2>/dev/null || true
-		rm -f /tmp/rootfs/etc/rc5.d/*resize2fs_once 2>/dev/null || true
-		message="INFO: Removed resize2fs_once (pishrink auto-expand)" ; broadcast
-	fi
-
-	# Replace rc.local with clean default (pishrink/BeagleBoard may have added
-	# fdisk/resize2fs/growpart commands that would operate on wrong device)
-	if [ -f /tmp/rootfs/etc/rc.local ] ; then
-		message="INFO: [cat /tmp/rootfs/etc/rc.local (before)]" ; broadcast
-		cat /tmp/rootfs/etc/rc.local
-		# Back up original and write clean rc.local
-		cp -f /tmp/rootfs/etc/rc.local /tmp/rootfs/etc/rc.local.bak.flasher
-		cat > /tmp/rootfs/etc/rc.local <<'RCEOF'
-#!/bin/sh -e
-#
-# rc.local - executed at the end of each multiuser runlevel
-#
-exit 0
-RCEOF
-		chmod +x /tmp/rootfs/etc/rc.local
-		message="INFO: Replaced rc.local with clean default" ; broadcast
-	fi
-
 	sync
 	umount /tmp/rootfs/ || umount -l /tmp/rootfs/ || true
 	message="INFO: eMMC rootfs configuration fixed" ; broadcast

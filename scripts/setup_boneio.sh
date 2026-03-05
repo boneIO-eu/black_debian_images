@@ -270,10 +270,10 @@ mosquitto_passwd -b /etc/mosquitto/passwd mqtt boneio123
 
 # Sudoers for boneio user
 cat > /etc/sudoers.d/boneio << 'EOF'
-# Allow mosquitto_passwd command for password file
-boneio ALL=(ALL) NOPASSWD: /usr/bin/mosquitto_passwd -c -b /etc/mosquitto/passwd boneio boneio123
-boneio ALL=(ALL) NOPASSWD: /usr/bin/mosquitto_passwd -b /etc/mosquitto/passwd homeassistant boneio123
-boneio ALL=(ALL) NOPASSWD: /usr/bin/mosquitto_passwd -b /etc/mosquitto/passwd mqtt boneio123
+# Allow mosquitto_passwd command for password file (any password)
+boneio ALL=(ALL) NOPASSWD: /usr/bin/mosquitto_passwd -c -b /etc/mosquitto/passwd boneio *
+boneio ALL=(ALL) NOPASSWD: /usr/bin/mosquitto_passwd -b /etc/mosquitto/passwd homeassistant *
+boneio ALL=(ALL) NOPASSWD: /usr/bin/mosquitto_passwd -b /etc/mosquitto/passwd mqtt *
 
 # Allow mosquitto service reload
 boneio ALL=(ALL) NOPASSWD: /bin/systemctl reload mosquitto

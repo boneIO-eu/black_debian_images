@@ -136,16 +136,16 @@ stabilize_system () {
 	message="--------------------------------------------------------------------------------" ; broadcast
 }
 
-# Progress monitor - persistent Python process that reads dd progress from FIFO
-# and updates OLED without flicker (single device init, no clear between frames)
-DD_PROGRESS_FIFO="/tmp/dd_progress"
+# Progress monitor - persistent Python process that polls dd's write progress
+# via /proc/PID/io and updates OLED without flicker (single device init)
 progress_monitor() {
-	local total_bytes="${IMAGE_SIZE:-0}"
-	python3 - "$total_bytes" "$DD_PROGRESS_FIFO" << 'PYEOF' &
-import sys, time, re
+	local total_bytes="$1"
+	local dd_pid="$2"
+	python3 - "$total_bytes" "$dd_pid" << 'PYEOF' &
+import sys, time, os
 
 total_bytes = int(sys.argv[1])
-fifo_path = sys.argv[2]
+dd_pid = sys.argv[2]
 
 # Initialize OLED once (no flicker on updates)
 device = None
@@ -160,7 +160,7 @@ try:
     device.persist = True
     font = ImageFont.load_default()
 except Exception:
-    pass  # No OLED — progress goes to console only
+    pass
 
 def draw(line1, line2, line3):
     if device and font:
@@ -172,30 +172,39 @@ def draw(line1, line2, line3):
         except Exception:
             pass
 
-start = time.time()
-last_update = 0
+def get_write_bytes(pid):
+    """Read write_bytes from /proc/PID/io."""
+    try:
+        with open(f"/proc/{pid}/io", "r") as f:
+            for line in f:
+                if line.startswith("write_bytes:"):
+                    return int(line.split()[1])
+    except Exception:
+        pass
+    return 0
 
+start = time.time()
 draw("Flashing eMMC", "[----------] 0%", "Starting...")
 
-with open(fifo_path, "r") as f:
-    for line in f:
-        m = re.match(r"(\d+)\s+bytes", line)
-        if not m or total_bytes <= 0:
-            continue
-        copied = int(m.group(1))
-        pct = min(copied * 100 // total_bytes, 100)
-        elapsed = int(time.time() - start)
-        now = time.time()
-        # Update OLED at most every 10 seconds
-        if now - last_update >= 10:
-            mins, secs = divmod(elapsed, 60)
-            filled = pct // 10
-            bar = "=" * filled + "-" * (10 - filled)
-            draw("Flashing eMMC", f"[{bar}] {pct}%", f"{mins}m {secs}s")
-            last_update = now
-            print(f"INFO: Progress: {pct}% ({mins}m {secs}s elapsed)")
+while os.path.exists(f"/proc/{dd_pid}"):
+    written = get_write_bytes(dd_pid)
+    elapsed = int(time.time() - start)
+    mins, secs = divmod(elapsed, 60)
+
+    if total_bytes > 0:
+        pct = min(written * 100 // total_bytes, 100)
+    else:
+        pct = 0
+
+    filled = pct // 10
+    bar = "=" * filled + "-" * (10 - filled)
+    draw("Flashing eMMC", f"[{bar}] {pct}%", f"{mins}m {secs}s")
+    print(f"INFO: Progress: {pct}% ({mins}m {secs}s elapsed)", flush=True)
+
+    time.sleep(10)
 
 draw("Flashing eMMC", "[==========] 100%", "Syncing...")
+print("INFO: Progress: 100% — dd finished", flush=True)
 PYEOF
 	PROGRESS_PID=$!
 }
@@ -283,24 +292,22 @@ find_image_file () {
 
 flash_emmc () {
 	message="INFO: Flashing eMMC..." ; broadcast
-	oled_msg "Flashing eMMC..." "0%" "Starting..."
 
-	# Create FIFO for dd progress
-	rm -f "$DD_PROGRESS_FIFO"
-	mkfifo "$DD_PROGRESS_FIFO"
-
-	# Start progress monitor (reads from FIFO)
-	progress_monitor & PROGRESS_PID=$!
-
-	message="INFO: [dd if=${IMAGE_FILE} of=${DESTINATION} bs=4M status=progress]" ; broadcast
+	message="INFO: [dd if=${IMAGE_FILE} of=${DESTINATION} bs=4M]" ; broadcast
 	message="--------------------------------------------------------------------------------" ; broadcast
 
-	# dd writes progress to stderr — tee it to both console and FIFO
-	dd if="${IMAGE_FILE}" of="${DESTINATION}" bs=4M status=progress 2>&1 | tee "$DD_PROGRESS_FIFO" || write_failure
+	# Run dd in background so we can monitor progress
+	dd if="${IMAGE_FILE}" of="${DESTINATION}" bs=4M 2>/dev/null &
+	local DD_PID=$!
+
+	# Start OLED progress monitor (polls /proc/$DD_PID/io every 10s)
+	progress_monitor "${IMAGE_SIZE}" "${DD_PID}"
+
+	# Wait for dd to finish
+	wait $DD_PID || write_failure
 
 	# Stop progress monitor
 	stop_progress_monitor
-	rm -f "$DD_PROGRESS_FIFO"
 
 	message="--------------------------------------------------------------------------------" ; broadcast
 	message="INFO: Write complete, syncing..." ; broadcast

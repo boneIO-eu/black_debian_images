@@ -10,6 +10,14 @@ version_message="3.1.0, dd-based flasher - reads /boneio-emmc.img from root file
 # Configuration
 IMAGE_FILE="/boneio-emmc.img"
 DESTINATION="/dev/mmcblk1"
+OLED_SCRIPT="/usr/sbin/oled_msg.sh"
+
+# Display message on OLED (safe to call without OLED connected)
+oled_msg() {
+	if [ -x "${OLED_SCRIPT}" ]; then
+		${OLED_SCRIPT} "$@" &
+	fi
+}
 
 cylon_leds() {
 	local leds_base=/sys/class/leds/beaglebone\:green\:usr
@@ -114,6 +122,9 @@ stabilize_system () {
 		sysctl -w vm.min_free_kbytes=16384 || true
 	fi
 
+	# Load I2C module for OLED display
+	modprobe i2c-dev 2>/dev/null || true
+
 	# Load MMC/eMMC kernel modules (may be needed if not built-in)
 	message="INFO: Loading MMC kernel modules..." ; broadcast
 	modprobe mmc_block 2>/dev/null || true
@@ -125,16 +136,68 @@ stabilize_system () {
 	message="--------------------------------------------------------------------------------" ; broadcast
 }
 
-# Progress monitor - prints elapsed time every 30 seconds
+# Progress monitor - persistent Python process that reads dd progress from FIFO
+# and updates OLED without flicker (single device init, no clear between frames)
+DD_PROGRESS_FIFO="/tmp/dd_progress"
 progress_monitor() {
-	local start_time=$(date +%s)
-	while true; do
-		sleep 30
-		local elapsed=$(($(date +%s) - start_time))
-		local mins=$((elapsed / 60))
-		local secs=$((elapsed % 60))
-		echo "INFO: Still writing... (${mins}m ${secs}s elapsed)"
-	done
+	local total_bytes="${IMAGE_SIZE:-0}"
+	python3 - "$total_bytes" "$DD_PROGRESS_FIFO" << 'PYEOF' &
+import sys, time, re
+
+total_bytes = int(sys.argv[1])
+fifo_path = sys.argv[2]
+
+# Initialize OLED once (no flicker on updates)
+device = None
+font = None
+try:
+    from luma.core.interface.serial import i2c
+    from luma.core.render import canvas
+    from luma.oled.device import sh1106
+    from PIL import ImageFont
+    serial = i2c(port=2, address=0x3C)
+    device = sh1106(serial)
+    device.persist = True
+    font = ImageFont.load_default()
+except Exception:
+    pass  # No OLED — progress goes to console only
+
+def draw(line1, line2, line3):
+    if device and font:
+        try:
+            with canvas(device) as d:
+                d.text((8, 12), line1, font=font, fill="white")
+                d.text((8, 28), line2, font=font, fill="white")
+                d.text((8, 44), line3, font=font, fill="white")
+        except Exception:
+            pass
+
+start = time.time()
+last_update = 0
+
+draw("Flashing eMMC", "[----------] 0%", "Starting...")
+
+with open(fifo_path, "r") as f:
+    for line in f:
+        m = re.match(r"(\d+)\s+bytes", line)
+        if not m or total_bytes <= 0:
+            continue
+        copied = int(m.group(1))
+        pct = min(copied * 100 // total_bytes, 100)
+        elapsed = int(time.time() - start)
+        now = time.time()
+        # Update OLED at most every 10 seconds
+        if now - last_update >= 10:
+            mins, secs = divmod(elapsed, 60)
+            filled = pct // 10
+            bar = "=" * filled + "-" * (10 - filled)
+            draw("Flashing eMMC", f"[{bar}] {pct}%", f"{mins}m {secs}s")
+            last_update = now
+            print(f"INFO: Progress: {pct}% ({mins}m {secs}s elapsed)")
+
+draw("Flashing eMMC", "[==========] 100%", "Syncing...")
+PYEOF
+	PROGRESS_PID=$!
 }
 
 stop_progress_monitor() {
@@ -220,16 +283,24 @@ find_image_file () {
 
 flash_emmc () {
 	message="INFO: Flashing eMMC..." ; broadcast
+	oled_msg "Flashing eMMC..." "0%" "Starting..."
 
-	# Start progress monitor
+	# Create FIFO for dd progress
+	rm -f "$DD_PROGRESS_FIFO"
+	mkfifo "$DD_PROGRESS_FIFO"
+
+	# Start progress monitor (reads from FIFO)
 	progress_monitor & PROGRESS_PID=$!
 
 	message="INFO: [dd if=${IMAGE_FILE} of=${DESTINATION} bs=4M status=progress]" ; broadcast
 	message="--------------------------------------------------------------------------------" ; broadcast
-	dd if="${IMAGE_FILE}" of="${DESTINATION}" bs=4M status=progress || write_failure
+
+	# dd writes progress to stderr — tee it to both console and FIFO
+	dd if="${IMAGE_FILE}" of="${DESTINATION}" bs=4M status=progress 2>&1 | tee "$DD_PROGRESS_FIFO" || write_failure
 
 	# Stop progress monitor
 	stop_progress_monitor
+	rm -f "$DD_PROGRESS_FIFO"
 
 	message="--------------------------------------------------------------------------------" ; broadcast
 	message="INFO: Write complete, syncing..." ; broadcast
@@ -246,6 +317,7 @@ flash_emmc () {
 
 fix_emmc_rootfs () {
 	message="INFO: Fixing eMMC rootfs configuration..." ; broadcast
+	oled_msg "Preparing system..." "Please wait"
 
 	# Re-read partition table after dd
 	message="INFO: Re-reading partition table on ${DESTINATION}..." ; broadcast
@@ -279,6 +351,24 @@ fix_emmc_rootfs () {
 	fi
 
 	message="INFO: Found eMMC rootfs: ${EMMC_ROOTFS} (partition ${media_rootfs})" ; broadcast
+
+	# Expand rootfs partition to fill entire eMMC
+	message="INFO: Expanding partition ${media_rootfs} on ${DESTINATION}..." ; broadcast
+	if command -v growpart >/dev/null 2>&1; then
+		growpart ${DESTINATION} ${media_rootfs} || true
+		message="INFO: growpart done" ; broadcast
+	else
+		message="INFO: growpart not available, using sfdisk..." ; broadcast
+		echo ", +" | sfdisk -N ${media_rootfs} ${DESTINATION} --force 2>/dev/null || true
+	fi
+	partprobe ${DESTINATION} 2>/dev/null || true
+	sleep 1
+
+	# Resize ext4 filesystem to fill expanded partition
+	message="INFO: Resizing filesystem on ${EMMC_ROOTFS}..." ; broadcast
+	e2fsck -f -y ${EMMC_ROOTFS} 2>/dev/null || true
+	resize2fs ${EMMC_ROOTFS} || true
+	message="INFO: Filesystem resize complete" ; broadcast
 
 	mkdir -p /tmp/rootfs/ || true
 	if ! mount "${EMMC_ROOTFS}" /tmp/rootfs/ -o async,noatime 2>/dev/null; then
@@ -322,6 +412,43 @@ fix_emmc_rootfs () {
 		message="INFO: Updated generic-sys-mods" ; broadcast
 	fi
 
+	# Remove pishrink resize2fs_once (references wrong device from SD image)
+	if [ -f /tmp/rootfs/etc/init.d/resize2fs_once ] ; then
+		rm -f /tmp/rootfs/etc/init.d/resize2fs_once || true
+		rm -f /tmp/rootfs/etc/rc2.d/*resize2fs_once 2>/dev/null || true
+		rm -f /tmp/rootfs/etc/rc3.d/*resize2fs_once 2>/dev/null || true
+		rm -f /tmp/rootfs/etc/rc5.d/*resize2fs_once 2>/dev/null || true
+		message="INFO: Removed resize2fs_once (not needed, partition already expanded)" ; broadcast
+	fi
+
+	# Remove grow_partition service (references wrong device from SD image)
+	if [ -f /tmp/rootfs/etc/systemd/system/multi-user.target.wants/grow_partition.service ] ; then
+		rm -f /tmp/rootfs/etc/systemd/system/multi-user.target.wants/grow_partition.service || true
+		message="INFO: Removed grow_partition.service" ; broadcast
+	fi
+
+	# Generate SSH host keys (so bbbio-set-sysconf doesn't need to reboot)
+	message="INFO: Generating SSH host keys..." ; broadcast
+	ssh-keygen -q -t rsa -N "" -f /tmp/rootfs/etc/ssh/ssh_host_rsa_key 2>/dev/null || true
+	ssh-keygen -q -t ecdsa -N "" -f /tmp/rootfs/etc/ssh/ssh_host_ecdsa_key 2>/dev/null || true
+	ssh-keygen -q -t ed25519 -N "" -f /tmp/rootfs/etc/ssh/ssh_host_ed25519_key 2>/dev/null || true
+	# Remove ssh_regenerate flag so bbbio-set-sysconf skips keygen + reboot
+	rm -f /tmp/rootfs/etc/bbb.io/ssh_regenerate 2>/dev/null || true
+	message="INFO: SSH host keys generated" ; broadcast
+
+	# Clean rc.local from pishrink fdisk/resize commands (reference wrong device)
+	if [ -f /tmp/rootfs/etc/rc.local ] ; then
+		cat > /tmp/rootfs/etc/rc.local <<'RCEOF'
+#!/bin/sh -e
+#
+# rc.local - executed at the end of each multiuser runlevel
+#
+exit 0
+RCEOF
+		chmod +x /tmp/rootfs/etc/rc.local
+		message="INFO: Cleaned rc.local (resize commands removed)" ; broadcast
+	fi
+
 	sync
 	umount /tmp/rootfs/ || umount -l /tmp/rootfs/ || true
 	message="INFO: eMMC rootfs configuration fixed" ; broadcast
@@ -343,6 +470,7 @@ cleanup_and_shutdown () {
 	message="INFO: ===============================================" ; broadcast
 	message="INFO: Remove SD card and reboot" ; broadcast
 	message="INFO: ===============================================" ; broadcast
+	oled_msg "Flash complete!" "Remove SD card" "and reboot."
 	message="" ; broadcast
 
 	# All LEDs on = success

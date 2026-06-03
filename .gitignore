@@ -1,0 +1,8 @@
+# Disk images
+*.img
+*.img.xz
+*.img.gz
+*.img.bz2
+
+# Test scripts
+scripts/test_*.sh

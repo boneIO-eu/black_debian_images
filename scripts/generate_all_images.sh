@@ -88,6 +88,8 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PREPARE_SCRIPT="$SCRIPT_DIR/prepare_image.sh"
 FLASHER_INIT="$SCRIPT_DIR/flasher/init-beagle-flasher-img"
+OLED_SCRIPT="$SCRIPT_DIR/flasher/oled_msg.sh"
+OLED_PYTHON="$SCRIPT_DIR/flasher/oled_msg.py"
 
 if [ ! -f "$PREPARE_SCRIPT" ]; then
     print_error "prepare_image.sh not found in $SCRIPT_DIR"
@@ -191,9 +193,81 @@ install_flasher_script() {
     print_info "Installing flasher script..."
     cp "$FLASHER_INIT" "$dest"
     chmod +x "$dest"
+    
+    # Install OLED helper scripts (optional, for display feedback during flash)
+    if [ -f "$OLED_SCRIPT" ]; then
+        cp "$OLED_SCRIPT" "$MOUNT_POINT/usr/sbin/oled_msg.sh"
+        chmod +x "$MOUNT_POINT/usr/sbin/oled_msg.sh"
+        print_info "Installed OLED shell wrapper"
+    fi
+    if [ -f "$OLED_PYTHON" ]; then
+        cp "$OLED_PYTHON" "$MOUNT_POINT/usr/sbin/oled_msg.py"
+        chmod +x "$MOUNT_POINT/usr/sbin/oled_msg.py"
+        print_info "Installed OLED Python renderer"
+    fi
 }
 
-# Function to create eMMC flasher image
+# Function to apply device-specific BoneIO config from example_config inside image
+# Finds the example_config directory in the installed boneio package (venv)
+# and copies the correct variant's YAML files to /home/boneio/boneio/
+apply_device_config() {
+    local device_name="$1"
+    local boneio_config_dir="$MOUNT_POINT/home/boneio/boneio"
+    
+    if [ ! -d "$boneio_config_dir" ]; then
+        print_warning "BoneIO config dir not found: $boneio_config_dir"
+        return 1
+    fi
+    
+    # Find example_config inside the venv's boneio package
+    local example_config_base=""
+    for site_pkg in "$MOUNT_POINT"/home/boneio/boneio/venv/lib/python*/site-packages/boneio/example_config; do
+        if [ -d "$site_pkg" ]; then
+            example_config_base="$site_pkg"
+            break
+        fi
+    done
+    
+    if [ -z "$example_config_base" ]; then
+        print_warning "example_config not found in boneio venv"
+        return 1
+    fi
+    
+    # Map generate_all_images device names to example_config folder names
+    local config_folder="$device_name"
+    
+    local example_dir="${example_config_base}/${config_folder}"
+    if [ ! -d "$example_dir" ]; then
+        print_error "Example config not found for device '$device_name' at: $example_dir"
+        print_info "Available configs: $(ls "$example_config_base" 2>/dev/null)"
+        return 1
+    fi
+    
+    # Remove old YAML config files and state (but keep venv, etc.)
+    print_info "Removing old config YAMLs and state from $boneio_config_dir..."
+    rm -f "$boneio_config_dir"/*.yaml
+    rm -f "$boneio_config_dir"/state.json
+    
+    # Copy new config files for this variant
+    print_info "Applying $device_name config from $example_dir..."
+    cp -v "$example_dir"/*.yaml "$boneio_config_dir/"
+    
+    # Fix ownership (boneio user, UID/GID 1000 typically)
+    chown -R 1000:1000 "$boneio_config_dir"/*.yaml 2>/dev/null || true
+    
+    print_info "Device config applied: $device_name"
+    
+    # Show what was copied
+    ls -la "$boneio_config_dir"/*.yaml 2>/dev/null
+}
+
+# Function to create eMMC flasher image (dd-to-SD-card ready)
+# Works like create_flasher_sd.sh but outputs a .img file instead of writing
+# to a physical SD card. The image contains:
+#   - Bootable Debian rootfs (from the sdcard image)
+#   - /boneio-emmc.img embedded copy (image to flash to eMMC)
+#   - Flasher init script + OLED helper scripts
+#   - uEnv.txt with cmdline=init=/usr/sbin/init-beagle-flasher-img
 create_emmc_flasher() {
     local sdcard_img="$1"
     local device_name="$2"
@@ -201,97 +275,125 @@ create_emmc_flasher() {
     
     print_info "Creating eMMC flasher for $device_name..."
     
-    # Get sizes
+    # We need the uncompressed sdcard image. Since process_device_type already
+    # compressed it, we need to decompress first.
     local sdcard_xz="${sdcard_img}.xz"
     if [ ! -f "$sdcard_xz" ]; then
         print_error "Compressed SDCARD image not found: $sdcard_xz"
         return 1
     fi
     
-    local img_size=$(stat -c%s "$sdcard_xz")
-    local img_size_mb=$((img_size / 1024 / 1024))
-    local boot_size_mb=64
-    local image_size_mb=$((img_size_mb + 50))
-    local total_size_mb=$((boot_size_mb + image_size_mb + 10))
+    # Decompress sdcard image to a temp file (this is the eMMC payload)
+    local emmc_payload="/tmp/boneio_emmc_payload.img"
+    print_info "Decompressing sdcard image for eMMC payload..."
+    xzcat "$sdcard_xz" > "$emmc_payload"
     
-    print_info "Creating flasher image (${total_size_mb}MB)..."
+    local payload_size=$(stat -c%s "$emmc_payload")
+    local payload_size_mb=$((payload_size / 1024 / 1024))
     
-    # Create empty image
-    dd if=/dev/zero of="$flasher_name" bs=1M count=$total_size_mb status=progress
+    # Flasher image needs: rootfs + embedded copy of eMMC image + overhead
+    # Total = original image + embedded image + ~100MB headroom
+    local total_size_mb=$((payload_size_mb * 2 + 200))
     
-    # Partition
-    sfdisk --force "$flasher_name" <<EOF
-4M,${boot_size_mb}M,0xC,*
-$((4 + boot_size_mb))M,${image_size_mb}M,L,-
-EOF
-
-    # Setup loop device
+    print_info "Creating flasher image (${total_size_mb}MB = rootfs + embedded eMMC image)..."
+    
+    # Start by copying the rootfs image as the base of the flasher
+    cp "$emmc_payload" "$flasher_name"
+    
+    # Extend the image file BEFORE setting up loop device
+    # so the kernel sees the full size from the start
+    truncate -s ${total_size_mb}M "$flasher_name"
+    
+    # Setup loop device (after truncate, so it sees full size)
     FLASHER_LOOP=$(losetup -fP --show "$flasher_name")
     sleep 1
     partprobe "$FLASHER_LOOP" || true
     sleep 1
     
-    # Format partitions
-    mkfs.vfat -F 32 "${FLASHER_LOOP}p1" -n BOOT
-    mkfs.ext4 -L IMAGE "${FLASHER_LOOP}p2"
+    print_info "Loop device: $FLASHER_LOOP, image size: ${total_size_mb}MB"
     
-    # Mount boot partition
-    mkdir -p /tmp/flasher_boot
-    mount "${FLASHER_LOOP}p1" /tmp/flasher_boot
+    # Find ext4 rootfs partition
+    local rootfs_part=""
+    local part_num=""
+    for i in 1 2 3; do
+        local part="${FLASHER_LOOP}p${i}"
+        if [ -b "$part" ]; then
+            local fs_type=$(blkid -s TYPE -o value "$part" 2>/dev/null || echo "unknown")
+            if [ "$fs_type" = "ext4" ] || [ "$fs_type" = "ext3" ]; then
+                rootfs_part="$part"
+                part_num="$i"
+                break
+            fi
+        fi
+    done
     
-    # Copy boot files from SDCARD image (need to decompress first)
-    print_info "Extracting boot files from SDCARD image..."
-    mkdir -p /tmp/sdcard_mount
-    local tmp_img="/tmp/sdcard_tmp.img"
-    xzcat "$sdcard_xz" > "$tmp_img"
-    SDCARD_LOOP=$(losetup -fP --show "$tmp_img")
-    sleep 1
-    partprobe "$SDCARD_LOOP" || true
-    sleep 1
+    if [ -z "$rootfs_part" ]; then
+        print_error "Could not find rootfs partition in flasher image!"
+        losetup -d "$FLASHER_LOOP"
+        rm -f "$flasher_name"
+        rm -f "$emmc_payload"
+        return 1
+    fi
     
-    # Find and mount boot partition
-    if [ -b "${SDCARD_LOOP}p1" ]; then
-        mount -o ro "${SDCARD_LOOP}p1" /tmp/sdcard_mount 2>/dev/null || \
-        mount -o ro "$SDCARD_LOOP" /tmp/sdcard_mount
+    # Expand partition to fill the image
+    print_info "Expanding partition $part_num on $FLASHER_LOOP..."
+    if command -v growpart &> /dev/null; then
+        growpart -v "$FLASHER_LOOP" "$part_num" || {
+            print_warning "growpart failed, trying sfdisk..."
+            echo ", +" | sfdisk -N "$part_num" "$FLASHER_LOOP" --force 2>/dev/null || true
+        }
     else
-        mount -o ro "$SDCARD_LOOP" /tmp/sdcard_mount
+        echo ", +" | sfdisk -N "$part_num" "$FLASHER_LOOP" --force 2>/dev/null || true
+    fi
+    partprobe "$FLASHER_LOOP" || true
+    sleep 1
+    
+    # Verify partition was expanded
+    local new_part_size=$(blockdev --getsize64 "$rootfs_part" 2>/dev/null || echo 0)
+    local new_part_size_mb=$((new_part_size / 1024 / 1024))
+    print_info "Partition size after expansion: ${new_part_size_mb}MB"
+    
+    # Resize filesystem
+    e2fsck -f -y "$rootfs_part" 2>/dev/null || true
+    resize2fs "$rootfs_part"
+    
+    # Mount rootfs — temporarily override MOUNT_POINT for install_flasher_script
+    local saved_mount_point="$MOUNT_POINT"
+    MOUNT_POINT="/tmp/flasher_rootfs"
+    mkdir -p "$MOUNT_POINT"
+    mount -o rw "$rootfs_part" "$MOUNT_POINT"
+    
+    # Disable cmdline flasher in uEnv.txt BEFORE embedding the image
+    # (the embedded image boots normally from eMMC, without the flasher)
+    local uenv_file="$MOUNT_POINT/boot/uEnv.txt"
+    if [ -f "$uenv_file" ]; then
+        sed -i 's/^cmdline=init=\/usr\/sbin\/init-beagle-flasher/#cmdline=init=\/usr\/sbin\/init-beagle-flasher/' "$uenv_file"
+        print_info "Disabled cmdline flasher in rootfs uEnv.txt"
     fi
     
-    # Copy boot files
-    if [ -d /tmp/sdcard_mount/boot/firmware ]; then
-        cp -rv /tmp/sdcard_mount/boot/firmware/* /tmp/flasher_boot/
-    elif [ -d /tmp/sdcard_mount/boot ]; then
-        cp -rv /tmp/sdcard_mount/boot/* /tmp/flasher_boot/
-    else
-        cp -rv /tmp/sdcard_mount/* /tmp/flasher_boot/
+    # Copy the eMMC payload into the rootfs
+    print_info "Embedding eMMC image as /boneio-emmc.img (${payload_size_mb}MB, this takes a while)..."
+    cp "$emmc_payload" "$MOUNT_POINT/boneio-emmc.img"
+    rm -f "$emmc_payload"
+    
+    # Install flasher script + OLED helpers (uses $MOUNT_POINT)
+    install_flasher_script
+    
+    # NOW enable cmdline flasher on the SD card's own uEnv.txt
+    if [ -f "$uenv_file" ]; then
+        echo "" >> "$uenv_file"
+        echo "# DD-based eMMC flasher (active only on SD card)" >> "$uenv_file"
+        echo "cmdline=init=/usr/sbin/init-beagle-flasher-img" >> "$uenv_file"
+        print_info "Enabled cmdline flasher in flasher uEnv.txt"
     fi
     
-    # Modify uEnv.txt for flasher
-    if [ -f /tmp/flasher_boot/uEnv.txt ]; then
-        echo "" >> /tmp/flasher_boot/uEnv.txt
-        echo "# DD-based eMMC flasher with xz decompression" >> /tmp/flasher_boot/uEnv.txt
-        echo "cmdline=init=/usr/sbin/init-beagle-flasher-img" >> /tmp/flasher_boot/uEnv.txt
-    fi
-    
-    umount /tmp/sdcard_mount
-    losetup -d "$SDCARD_LOOP"
-    rm -f "$tmp_img"
     sync
-    umount /tmp/flasher_boot
-    
-    # Copy compressed image to IMAGE partition
-    print_info "Copying compressed rootfs to flasher..."
-    mkdir -p /tmp/flasher_image
-    mount "${FLASHER_LOOP}p2" /tmp/flasher_image
-    cp -v "$sdcard_xz" /tmp/flasher_image/rootfs.img.xz
-    sync
-    umount /tmp/flasher_image
-    
-    # Cleanup
+    umount "$MOUNT_POINT"
+    MOUNT_POINT="$saved_mount_point"
     losetup -d "$FLASHER_LOOP"
     
     # Compress flasher image
-    print_info "Compressing flasher image..."
+    print_info "Compressing flasher image with xz..."
     xz -9 -T0 -v "$flasher_name"
     
     # Change ownership
@@ -325,12 +427,13 @@ process_device_type() {
         return 1
     fi
     
-    # Step 3: Run prepare_image.sh (if it takes mount point and device)
-    print_info "Preparing image for $device_name..."
-    if [ -x "$PREPARE_SCRIPT" ]; then
-        # If prepare_script accepts mount point, use it
-        # Otherwise just ensure mount is good
-        true
+    # Step 3: Apply device-specific BoneIO configuration
+    print_info "Applying device config for $device_name..."
+    if ! apply_device_config "$device_name"; then
+        print_error "Failed to apply config for $device_name"
+        unmount_image
+        rm -f "$output_name"
+        return 1
     fi
     
     # Step 4: Install flasher script if needed
@@ -365,10 +468,8 @@ process_device_type() {
 cleanup() {
     print_warning "Cleaning up..."
     unmount_image
-    umount /tmp/flasher_boot 2>/dev/null || true
-    umount /tmp/flasher_image 2>/dev/null || true
-    umount /tmp/sdcard_mount 2>/dev/null || true
-    rm -f /tmp/sdcard_tmp.img
+    umount /tmp/flasher_rootfs 2>/dev/null || true
+    rm -f /tmp/boneio_emmc_payload.img
 }
 
 # Set trap for cleanup on exit

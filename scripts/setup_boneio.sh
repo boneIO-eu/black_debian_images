@@ -1,12 +1,21 @@
 #!/bin/bash
 ## BoneIO Black - Complete System Setup Script
 ## Usage: curl -H 'Cache-Control: no-cache' -fsSL https://raw.githubusercontent.com/boneIO-eu/black_debian_images/main/scripts/setup_boneio.sh | sudo bash
+## Options: --no-cleanup  Skip final cleanup step (for testing on a live system)
 ##
 ## This script configures a fresh Debian 13 installation for BoneIO Black hardware.
 ## It will install all required packages, configure services, and prepare the system
 ## for image creation.
 
 set -e
+
+# Parse arguments
+NO_CLEANUP=false
+for arg in "$@"; do
+    case "$arg" in
+        --no-cleanup) NO_CLEANUP=true ;;
+    esac
+done
 
 # Check root
 if [[ $EUID -ne 0 ]]; then
@@ -27,7 +36,7 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 BONEIO_USER="${BONEIO_USER:-boneio}"
 BONEIO_HOME="/home/${BONEIO_USER}"
-SCRIPT_VERSION="2026-02-05.1"
+SCRIPT_VERSION="2026-04-11.1"
 
 echo "================================================================================"
 echo "  BoneIO Black - System Setup"
@@ -35,12 +44,15 @@ echo "  Version: ${SCRIPT_VERSION}"
 echo "================================================================================"
 echo "User: ${BONEIO_USER}"
 echo "Home: ${BONEIO_HOME}"
+if $NO_CLEANUP; then
+    echo "Mode: NO CLEANUP (live testing)"
+fi
 echo ""
 
 # =============================================================================
 # STEP 1: UFW Firewall
 # =============================================================================
-log_info "1/10: Configuring UFW firewall..."
+log_info "1/11: Configuring UFW firewall..."
 ufw allow 1883  # MQTT
 ufw allow 8090  # BoneIO Web
 ufw allow 8091  # Nginx proxy
@@ -50,7 +62,7 @@ log_info "   UFW configured"
 # =============================================================================
 # STEP 2: APT Install
 # =============================================================================
-log_info "2/10: Installing required packages..."
+log_info "2/11: Installing required packages..."
 export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
 apt update
@@ -78,7 +90,7 @@ log_info "   Packages installed"
 # =============================================================================
 # STEP 3: APT Remove unnecessary packages
 # =============================================================================
-log_info "3/10: Removing unnecessary packages..."
+log_info "3/11: Removing unnecessary packages..."
 apt remove -y \
     manpages \
     wireless-tools \
@@ -110,20 +122,26 @@ log_info "   Unnecessary packages removed"
 # =============================================================================
 # STEP 4: Disable unnecessary timers
 # =============================================================================
-log_info "4/10: Disabling unnecessary services..."
+log_info "4/11: Disabling unnecessary services..."
 systemctl disable --now apt-daily-upgrade.timer 2>/dev/null || true
 systemctl disable unattended-upgrades.service 2>/dev/null || true
 systemctl disable --now apt-daily.timer 2>/dev/null || true
 log_info "   Services disabled"
 
 # =============================================================================
-# STEP 5: Docker + Node-RED + Nginx setup
+# STEP 5: Docker + Node-RED + Nginx setup (directories only)
 # =============================================================================
-log_info "5/10: Setting up Docker environment..."
+log_info "5/11: Setting up Docker directories..."
 
 mkdir -p ${BONEIO_HOME}/docker/nodered/node-red/data
 mkdir -p ${BONEIO_HOME}/docker/nodered/nginx
+chown -R ${BONEIO_USER}:${BONEIO_USER} ${BONEIO_HOME}/docker
+log_info "   Docker directories created"
 
+# PLACEHOLDER: Docker + Nginx + journald + mosquitto + sudoers + OLED + systemd
+# files are now managed by boneio-migrate (called in STEP 9 below).
+
+# Docker logging limits — applied by migration; restart docker now
 cat > ${BONEIO_HOME}/docker/nodered/docker-compose.yaml << 'EOF'
 services:
   node-red:
@@ -234,63 +252,48 @@ EOF
 systemctl restart docker
 
 # =============================================================================
-# STEP 6: Journald configuration
+# STEP 6: Mosquitto — bootstrap passwd file (data only, not config)
 # =============================================================================
-log_info "6/10: Configuring journald..."
-cat > /etc/systemd/journald.conf << 'EOF'
-[Journal]
-Compress=yes
-SystemMaxUse=300M
-SystemKeepFree=300M
-SystemMaxFileSize=50M
-MaxRetentionSec=2weeks
-EOF
-systemctl restart systemd-journald
-log_info "   Journald configured"
+log_info "6/11: Bootstrapping Mosquitto passwd file..."
 
-# =============================================================================
-# STEP 7: Mosquitto configuration
-# =============================================================================
-log_info "7/10: Configuring Mosquitto..."
-
-# Create password file with correct permissions BEFORE adding users
+systemctl stop mosquitto 2>/dev/null || true
+rm -f /var/lib/mosquitto/mosquitto.db /var/lib/mosquitto/*.db
 touch /etc/mosquitto/passwd
 chmod 0600 /etc/mosquitto/passwd
 chown mosquitto:mosquitto /etc/mosquitto/passwd
-
-cat > /etc/mosquitto/conf.d/boneio.conf << 'EOF'
-listener 1883
-password_file /etc/mosquitto/passwd
-EOF
-chmod 0600 /etc/mosquitto/conf.d/boneio.conf
-
 mosquitto_passwd -b /etc/mosquitto/passwd boneio boneio123
 mosquitto_passwd -b /etc/mosquitto/passwd homeassistant boneio123
 mosquitto_passwd -b /etc/mosquitto/passwd mqtt boneio123
+log_info "   Mosquitto passwd bootstrapped (config applied by migration)"
 
-# Sudoers for boneio user
-cat > /etc/sudoers.d/boneio << 'EOF'
-# Allow mosquitto_passwd command for password file (any password)
-boneio ALL=(ALL) NOPASSWD: /usr/bin/mosquitto_passwd -c -b /etc/mosquitto/passwd boneio *
-boneio ALL=(ALL) NOPASSWD: /usr/bin/mosquitto_passwd -b /etc/mosquitto/passwd homeassistant *
-boneio ALL=(ALL) NOPASSWD: /usr/bin/mosquitto_passwd -b /etc/mosquitto/passwd mqtt *
-
-# Allow mosquitto service reload
-boneio ALL=(ALL) NOPASSWD: /bin/systemctl reload mosquitto
-boneio ALL=(ALL) NOPASSWD: /usr/bin/hostnamectl set-hostname *
-
-boneio ALL=(ALL) NOPASSWD: /sbin/reboot
-boneio ALL=(ALL) NOPASSWD: /sbin/shutdown -h now
-EOF
-chmod 0440 /etc/sudoers.d/boneio
-
-systemctl restart mosquitto
-log_info "   Mosquitto configured"
+# Steps 7-8 (journald, sudoers, OLED, systemd services) are applied below
+# by boneio-migrate after pip install. No heredocs needed here.
 
 # =============================================================================
-# STEP 8: BoneIO application installation
+# STEP 8: Early OLED boot splash (initramfs)
 # =============================================================================
-log_info "8/10: Installing BoneIO application..."
+log_info "8/11: Installing early OLED boot splash (initramfs)..."
+INITRAMFS_HOOK_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/initramfs/hooks/oled-splash"
+INITRAMFS_SCRIPT_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/initramfs/scripts/init-premount/oled-splash"
+
+if [ -f "${INITRAMFS_HOOK_SRC}" ] && [ -f "${INITRAMFS_SCRIPT_SRC}" ]; then
+    cp "${INITRAMFS_HOOK_SRC}" /etc/initramfs-tools/hooks/oled-splash
+    chmod +x /etc/initramfs-tools/hooks/oled-splash
+
+    mkdir -p /etc/initramfs-tools/scripts/init-premount
+    cp "${INITRAMFS_SCRIPT_SRC}" /etc/initramfs-tools/scripts/init-premount/oled-splash
+    chmod +x /etc/initramfs-tools/scripts/init-premount/oled-splash
+
+    update-initramfs -u
+    log_info "   Early OLED splash installed (initramfs rebuilt)"
+else
+    log_warn "Initramfs OLED splash sources not found, skipping"
+fi
+
+# =============================================================================
+# STEP 9: BoneIO application installation
+# =============================================================================
+log_info "9/11: Installing BoneIO application..."
 mkdir -p ${BONEIO_HOME}/boneio
 python3 -m venv ${BONEIO_HOME}/boneio/venv
 ${BONEIO_HOME}/boneio/venv/bin/pip install --upgrade pip
@@ -304,30 +307,39 @@ fi
 
 chown -R ${BONEIO_USER}:${BONEIO_USER} ${BONEIO_HOME}/boneio
 
-# Create systemd service
-cat > /etc/systemd/system/BoneIO.service << EOF
-[Unit]
-Description=boneIO
-After=multi-user.target network.target
+# Install and run boneio-migrate bootstrap
+# This installs the helper to /usr/sbin/boneio-migrate with NOPASSWD sudoers,
+# then applies all pending system migrations (journald, mosquitto conf,
+# sudoers, OLED scripts, systemd services, docker daemon.json, etc.).
+log_info "   Running boneio-migrate bootstrap..."
+BONEIO_MIGRATE_HELPER="${BONEIO_HOME}/boneio/venv/lib/python*/site-packages/boneio/migrations/bootstrap/boneio-migrate"
+BONEIO_MIGRATE_SUDOERS="${BONEIO_HOME}/boneio/venv/lib/python*/site-packages/boneio/migrations/bootstrap/sudoers-migrate"
+BONEIO_INSTALL_HELPER="${BONEIO_HOME}/boneio/venv/lib/python*/site-packages/boneio/migrations/bootstrap/install-helper.sh"
 
-[Service]
-Type=simple
-ExecStart=${BONEIO_HOME}/boneio/venv/bin/boneio run -c ${BONEIO_HOME}/boneio/config.yaml
-User=${BONEIO_USER}
-Restart=always
-RestartSec=3
+# Resolve globs
+for F in $BONEIO_MIGRATE_HELPER; do BONEIO_MIGRATE_HELPER="$F"; break; done
+for F in $BONEIO_MIGRATE_SUDOERS; do BONEIO_MIGRATE_SUDOERS="$F"; break; done
+for F in $BONEIO_INSTALL_HELPER; do BONEIO_INSTALL_HELPER="$F"; break; done
 
-[Install]
-WantedBy=multi-user.target
-EOF
+if [ -f "${BONEIO_INSTALL_HELPER}" ]; then
+    bash "${BONEIO_INSTALL_HELPER}" "${BONEIO_MIGRATE_HELPER}" "${BONEIO_MIGRATE_SUDOERS}"
+    # Apply all migrations via MigrationRunner (boneio-migrate helper expects JSON on stdin,
+    # not CLI args — the runner generates the JSON plan and pipes it to the helper).
+    sudo -u ${BONEIO_USER} ${BONEIO_HOME}/boneio/venv/bin/python3 -c "
+from boneio.migrations.runner import MigrationRunner
+r = MigrationRunner()
+r.apply_all()
+" || true
+else
+    log_warn "boneio-migrate bootstrap not found, skipping migration apply"
+fi
 
-systemctl daemon-reload
 log_info "   BoneIO application installed"
 
 # =============================================================================
-# STEP 9: Device Tree Overlay
+# STEP 10: Device Tree Overlay
 # =============================================================================
-log_info "9/10: Building and installing Device Tree Overlay..."
+log_info "10/11: Building and installing Device Tree Overlay..."
 cd /opt/source
 if [ -d "black-pins-overlay" ]; then
     log_info "   Updating existing overlay repo..."
@@ -354,45 +366,28 @@ sed -i \
 log_info "   Device Tree Overlay installed"
 
 # =============================================================================
-# STEP 10: Final cleanup (prepare_image.sh functionality)
+# STEP 11: Final cleanup (prepare_image.sh functionality)
 # =============================================================================
-log_info "10/10: Running final cleanup..."
+if $NO_CLEANUP; then
+    log_warn "Skipping cleanup (--no-cleanup). System is ready for live testing."
+    log_info "OLED boot splash service is enabled. Reboot to test it."
+    log_info "To test OLED manually: /usr/sbin/oled_msg.sh 'Test line 1' 'Test line 2'"
+    echo ""
+    echo "================================================================================"
+    echo "  SETUP COMPLETE (no cleanup, no shutdown)"
+    echo "================================================================================"
+    exit 0
+fi
+
+log_info "11/11: Running final cleanup..."
 
 # UTF-8 locale
 sed -i 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
 locale-gen en_US.UTF-8
 update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 
-# One-time hostname setup service
-cat > /usr/local/bin/set-hostname-once.sh << 'EOF'
-#!/bin/bash
-MAC=$(cat /sys/class/net/eth0/address 2>/dev/null)
-if [ -n "$MAC" ] && [ "$MAC" != "none" ]; then
-    MAC_CLEAN=$(echo $MAC | tr -d ':')
-    ID=${MAC_CLEAN: -6}
-    NEW_HOSTNAME="blk$ID"
-    hostnamectl set-hostname "$NEW_HOSTNAME"
-    sed -i "s/127.0.1.1.*/127.0.1.1\t$NEW_HOSTNAME/g" /etc/hosts
-fi
-systemctl disable set-hostname-once.service
-EOF
-chmod +x /usr/local/bin/set-hostname-once.sh
-
-cat > /etc/systemd/system/set-hostname-once.service << 'EOF'
-[Unit]
-Description=Set hostname based on MAC (runs once)
-After=network-pre.target
-Before=network.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/set-hostname-once.sh
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-EOF
-systemctl enable set-hostname-once.service
+# set-hostname-once.sh + set-hostname-once.service are managed by
+# boneio-migrate (applied in STEP 9 above). No heredoc needed here.
 
 # Clean up
 apt-get autoremove -y

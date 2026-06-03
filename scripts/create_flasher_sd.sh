@@ -32,6 +32,10 @@ ROOTFS_IMG="$2"
 # Get script directory for flasher script
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FLASHER_SCRIPT="$SCRIPT_DIR/flasher/init-beagle-flasher-img"
+OLED_SCRIPT="$SCRIPT_DIR/flasher/oled_msg.sh"
+OLED_PYTHON_SCRIPT="$SCRIPT_DIR/flasher/oled_msg.py"
+OLED_BOOT_SPLASH="$SCRIPT_DIR/flasher/oled_boot_splash.py"
+OLED_BOOT_SPLASH_SH="$SCRIPT_DIR/flasher/oled_boot_splash.sh"
 
 # Validate inputs
 if [ ! -b "${SD_DEVICE}" ]; then
@@ -185,6 +189,32 @@ cp "${ROOTFS_IMG}" /tmp/flasher_rootfs/boneio-emmc.img
 echo "Installing flasher script..."
 cp "${FLASHER_SCRIPT}" /tmp/flasher_rootfs/usr/sbin/init-beagle-flasher-img
 chmod +x /tmp/flasher_rootfs/usr/sbin/init-beagle-flasher-img
+
+# Install OLED helper script (optional, for display feedback)
+if [ -f "${OLED_SCRIPT}" ]; then
+    cp "${OLED_SCRIPT}" /tmp/flasher_rootfs/usr/sbin/oled_msg.sh
+    chmod +x /tmp/flasher_rootfs/usr/sbin/oled_msg.sh
+    echo "Installed OLED helper script"
+fi
+
+if [ -f "${OLED_PYTHON_SCRIPT}" ]; then
+    cp "${OLED_PYTHON_SCRIPT}" /tmp/flasher_rootfs/usr/sbin/oled_msg.py
+    chmod +x /tmp/flasher_rootfs/usr/sbin/oled_msg.py
+    echo "Installed OLED Python renderer"
+fi
+
+# Install fast boot splash scripts (smbus2-based, no luma dependency)
+if [ -f "${OLED_BOOT_SPLASH}" ]; then
+    cp "${OLED_BOOT_SPLASH}" /tmp/flasher_rootfs/usr/sbin/oled_boot_splash.py
+    chmod +x /tmp/flasher_rootfs/usr/sbin/oled_boot_splash.py
+    echo "Installed OLED boot splash script"
+fi
+
+if [ -f "${OLED_BOOT_SPLASH_SH}" ]; then
+    cp "${OLED_BOOT_SPLASH_SH}" /tmp/flasher_rootfs/usr/sbin/oled_boot_splash.sh
+    chmod +x /tmp/flasher_rootfs/usr/sbin/oled_boot_splash.sh
+    echo "Installed OLED boot splash wrapper"
+fi
 
 # NOW enable cmdline flasher on the SD card's own uEnv.txt
 # This only affects the SD card boot - the image inside has it disabled.

@@ -1,0 +1,10 @@
+#!/bin/sh
+# Hook: copy i2ctransfer into initramfs for OLED boot splash
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in prereqs) prereqs; exit 0;; esac
+
+. /usr/share/initramfs-tools/hook-functions
+
+copy_exec /usr/sbin/i2ctransfer
+copy_exec /usr/sbin/i2cset

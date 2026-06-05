@@ -143,9 +143,25 @@ else
 fi
 sync
 
-# Step 4: Final shrink with pishrink (if available)
+# Step 4: Restore SD card (re-expand partition so card is reusable)
+if [ "$SHRINK_OK" = true ] && [ -n "$ROOTFS_PART" ] && [ -n "$ROOTFS_NUM" ]; then
+    echo ""
+    echo "--- Step 4/5: Restoring SD card (re-expanding partition) ---"
+    if command -v growpart &> /dev/null; then
+        growpart ${SD_DEVICE} ${ROOTFS_NUM} || true
+    else
+        echo ", +" | sfdisk -N ${ROOTFS_NUM} ${SD_DEVICE} --force --no-reread 2>/dev/null || true
+    fi
+    partprobe ${SD_DEVICE} 2>/dev/null || true
+    sleep 1
+    e2fsck -f -y ${ROOTFS_PART} 2>/dev/null || true
+    resize2fs ${ROOTFS_PART} || true
+    echo "SD card restored — fully reusable"
+fi
+
+# Step 5: Final shrink with pishrink (if available)
 echo ""
-echo "--- Step 4/4: Final optimization ---"
+echo "--- Step 5/5: Final optimization ---"
 if command -v pishrink.sh &> /dev/null; then
     echo "Running pishrink.sh for final compaction..."
     pishrink.sh -s ${OUTPUT_FILE}
@@ -163,6 +179,9 @@ echo "Original SD size: ${SD_SIZE_MB} MB"
 echo "Final image size: ${FINAL_SIZE_MB} MB"
 echo "Saved:           $((SD_SIZE_MB - FINAL_SIZE_MB)) MB"
 echo ""
+echo "SD card has been restored and is reusable."
+echo ""
 echo "Next step:"
 echo "  sudo ./generate_all_images.sh ${OUTPUT_FILE} <version> --emmc-flasher"
 echo "================================================================================"
+

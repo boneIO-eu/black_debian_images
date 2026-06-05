@@ -131,21 +131,8 @@ systemctl disable --now iwd.service 2>/dev/null || true
 # Boot speed: cockpit (web admin, boneIO has its own UI) ~1.9s
 systemctl disable --now cockpit.socket 2>/dev/null || true
 
-# Defer heavy services to start after boneio (less CPU contention on single-core)
-mkdir -p /etc/systemd/system/bb-usb-gadgets.service.d
-cat > /etc/systemd/system/bb-usb-gadgets.service.d/after-boneio.conf << 'EOF'
-[Unit]
-After=boneio.service
-EOF
-
-mkdir -p /etc/systemd/system/keyboard-setup.service.d
-cat > /etc/systemd/system/keyboard-setup.service.d/after-boneio.conf << 'EOF'
-[Unit]
-After=boneio.service
-EOF
-
 systemctl daemon-reload
-log_info "   Services disabled/deferred"
+log_info "   Services disabled"
 
 # =============================================================================
 # STEP 5: Docker + Node-RED + Caddy setup (directories only)

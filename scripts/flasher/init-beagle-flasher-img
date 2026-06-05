@@ -13,9 +13,24 @@ DESTINATION="/dev/mmcblk1"
 OLED_SCRIPT="/usr/sbin/oled_msg.sh"
 
 # Display message on OLED (safe to call without OLED connected)
+# When daemon is running (--serve), messages go via FIFO — instant, no flicker.
 oled_msg() {
 	if [ -x "${OLED_SCRIPT}" ]; then
 		${OLED_SCRIPT} "$@" &
+	fi
+}
+
+# Start OLED daemon (keeps Python+luma in memory for flicker-free updates)
+oled_start_daemon() {
+	if [ -x "${OLED_SCRIPT}" ]; then
+		${OLED_SCRIPT} --serve
+	fi
+}
+
+# Stop OLED daemon
+oled_stop_daemon() {
+	if [ -x "${OLED_SCRIPT}" ]; then
+		${OLED_SCRIPT} --stop
 	fi
 }
 
@@ -125,6 +140,9 @@ stabilize_system () {
 	# Load I2C module for OLED display
 	modprobe i2c-dev 2>/dev/null || true
 
+	# Start OLED daemon (keeps Python+luma in memory for flicker-free updates)
+	oled_start_daemon
+
 	# Load MMC/eMMC kernel modules (may be needed if not built-in)
 	message="INFO: Loading MMC kernel modules..." ; broadcast
 	modprobe mmc_block 2>/dev/null || true
@@ -136,77 +154,45 @@ stabilize_system () {
 	message="--------------------------------------------------------------------------------" ; broadcast
 }
 
-# Progress monitor - persistent Python process that polls dd's write progress
-# via /proc/PID/io and updates OLED without flicker (single device init)
+# Progress monitor - polls /proc/PID/io for write_bytes and updates OLED
+# Uses oled_msg (proven to work in flasher context) every 10s
 progress_monitor() {
 	local total_bytes="$1"
 	local dd_pid="$2"
-	python3 - "$total_bytes" "$dd_pid" << 'PYEOF' &
-import sys, time, os
+	local start_time=$(date +%s)
 
-total_bytes = int(sys.argv[1])
-dd_pid = sys.argv[2]
+	oled_msg "Flashing eMMC" "[----------] 0%" "Starting..."
 
-# Initialize OLED once (no flicker on updates)
-device = None
-font = None
-try:
-    from luma.core.interface.serial import i2c
-    from luma.core.render import canvas
-    from luma.oled.device import sh1106
-    from PIL import ImageFont
-    serial = i2c(port=2, address=0x3C)
-    device = sh1106(serial)
-    device.persist = True
-    font = ImageFont.load_default()
-except Exception:
-    pass
+	while [ -e "/proc/${dd_pid}" ]; do
+		sleep 10
 
-def draw(line1, line2, line3):
-    if device and font:
-        try:
-            with canvas(device) as d:
-                d.text((8, 12), line1, font=font, fill="white")
-                d.text((8, 28), line2, font=font, fill="white")
-                d.text((8, 44), line3, font=font, fill="white")
-        except Exception:
-            pass
+		# Read write_bytes from /proc/PID/io
+		local written=0
+		if [ -f "/proc/${dd_pid}/io" ]; then
+			written=$(grep '^write_bytes:' /proc/${dd_pid}/io 2>/dev/null | awk '{print $2}' || echo 0)
+		fi
+		[ -z "$written" ] && written=0
 
-def get_write_bytes(pid):
-    """Read write_bytes from /proc/PID/io."""
-    try:
-        with open(f"/proc/{pid}/io", "r") as f:
-            for line in f:
-                if line.startswith("write_bytes:"):
-                    return int(line.split()[1])
-    except Exception:
-        pass
-    return 0
+		local elapsed=$(( $(date +%s) - start_time ))
+		local mins=$(( elapsed / 60 ))
+		local secs=$(( elapsed % 60 ))
+		local pct=0
+		if [ "$total_bytes" -gt 0 ] 2>/dev/null; then
+			pct=$(( written * 100 / total_bytes ))
+			[ "$pct" -gt 100 ] && pct=100
+		fi
 
-start = time.time()
-draw("Flashing eMMC", "[----------] 0%", "Starting...")
+		# Build progress bar
+		local filled=$(( pct / 10 ))
+		local empty=$(( 10 - filled ))
+		local bar=""
+		local i
+		for i in $(seq 1 $filled); do bar="${bar}="; done
+		for i in $(seq 1 $empty); do bar="${bar}-"; done
 
-while os.path.exists(f"/proc/{dd_pid}"):
-    written = get_write_bytes(dd_pid)
-    elapsed = int(time.time() - start)
-    mins, secs = divmod(elapsed, 60)
-
-    if total_bytes > 0:
-        pct = min(written * 100 // total_bytes, 100)
-    else:
-        pct = 0
-
-    filled = pct // 10
-    bar = "=" * filled + "-" * (10 - filled)
-    draw("Flashing eMMC", f"[{bar}] {pct}%", f"{mins}m {secs}s")
-    print(f"INFO: Progress: {pct}% ({mins}m {secs}s elapsed)", flush=True)
-
-    time.sleep(10)
-
-draw("Flashing eMMC", "[==========] 100%", "Syncing...")
-print("INFO: Progress: 100% — dd finished", flush=True)
-PYEOF
-	PROGRESS_PID=$!
+		oled_msg "Flashing eMMC" "[${bar}] ${pct}%" "${mins}m ${secs}s"
+		echo "INFO: Progress: ${pct}% (${mins}m ${secs}s elapsed)"
+	done
 }
 
 stop_progress_monitor() {
@@ -301,7 +287,8 @@ flash_emmc () {
 	local DD_PID=$!
 
 	# Start OLED progress monitor (polls /proc/$DD_PID/io every 10s)
-	progress_monitor "${IMAGE_SIZE}" "${DD_PID}"
+	progress_monitor "${IMAGE_SIZE}" "${DD_PID}" &
+	PROGRESS_PID=$!
 
 	# Wait for dd to finish
 	wait $DD_PID || write_failure
@@ -324,7 +311,7 @@ flash_emmc () {
 
 fix_emmc_rootfs () {
 	message="INFO: Fixing eMMC rootfs configuration..." ; broadcast
-	oled_msg "Preparing system..." "Please wait"
+	oled_msg "Setup system" "[----------] 0%" "Scanning..."
 
 	# Re-read partition table after dd
 	message="INFO: Re-reading partition table on ${DESTINATION}..." ; broadcast
@@ -361,6 +348,7 @@ fix_emmc_rootfs () {
 
 	# Expand rootfs partition to fill entire eMMC
 	message="INFO: Expanding partition ${media_rootfs} on ${DESTINATION}..." ; broadcast
+	oled_msg "Setup system" "[==---------] 15%" "Expanding partition"
 	if command -v growpart >/dev/null 2>&1; then
 		growpart ${DESTINATION} ${media_rootfs} || true
 		message="INFO: growpart done" ; broadcast
@@ -373,6 +361,7 @@ fix_emmc_rootfs () {
 
 	# Resize ext4 filesystem to fill expanded partition
 	message="INFO: Resizing filesystem on ${EMMC_ROOTFS}..." ; broadcast
+	oled_msg "Setup system" "[===--------] 30%" "Resizing filesystem"
 	e2fsck -f -y ${EMMC_ROOTFS} 2>/dev/null || true
 	resize2fs ${EMMC_ROOTFS} || true
 	message="INFO: Filesystem resize complete" ; broadcast
@@ -385,6 +374,7 @@ fix_emmc_rootfs () {
 
 	# Generate /etc/fstab with correct eMMC device paths
 	message="INFO: Generating: /etc/fstab" ; broadcast
+	oled_msg "Setup system" "[=====------] 45%" "Configuring fstab"
 	echo "# /etc/fstab: static file system information." > /tmp/rootfs/etc/fstab
 	echo "#" >> /tmp/rootfs/etc/fstab
 	echo "${DESTINATION}p${media_rootfs}  /  ext4  noatime,errors=remount-ro  0  1" >> /tmp/rootfs/etc/fstab
@@ -404,6 +394,7 @@ fix_emmc_rootfs () {
 	message="--------------------------------------------------------------------------------" ; broadcast
 
 	# Disable flasher cmdline in eMMC uEnv.txt
+	oled_msg "Setup system" "[======-----] 60%" "Fixing boot config"
 	if [ -f /tmp/rootfs/boot/uEnv.txt ]; then
 		sed -i -e 's:cmdline=init:#cmdline=init:g' /tmp/rootfs/boot/uEnv.txt
 		message="INFO: Disabled flasher cmdline in eMMC uEnv.txt" ; broadcast
@@ -435,10 +426,36 @@ fix_emmc_rootfs () {
 	fi
 
 	# Generate SSH host keys (so bbbio-set-sysconf doesn't need to reboot)
-	message="INFO: Generating SSH host keys..." ; broadcast
-	ssh-keygen -q -t rsa -N "" -f /tmp/rootfs/etc/ssh/ssh_host_rsa_key 2>/dev/null || true
-	ssh-keygen -q -t ecdsa -N "" -f /tmp/rootfs/etc/ssh/ssh_host_ecdsa_key 2>/dev/null || true
-	ssh-keygen -q -t ed25519 -N "" -f /tmp/rootfs/etc/ssh/ssh_host_ed25519_key 2>/dev/null || true
+	# NOTE: Flasher runs as init with minimal entropy. We seed the pool
+	# from hardware sources and skip RSA (slow prime generation).
+	message="INFO: Seeding entropy for SSH keygen..." ; broadcast
+	oled_msg "Setup system" "[========---] 75%" "Generating SSH keys"
+
+	# Seed entropy from hardware RNG (AM335x has built-in TRNG)
+	modprobe omap-rng 2>/dev/null || true
+	if [ -c /dev/hwrng ]; then
+		dd if=/dev/hwrng of=/dev/urandom count=1 bs=4096 2>/dev/null || true
+		message="INFO: Seeded entropy from hardware RNG" ; broadcast
+	else
+		message="INFO: /dev/hwrng not available, using software entropy" ; broadcast
+	fi
+	# Fallback: also seed from system sources
+	{
+		cat /proc/interrupts
+		cat /proc/timer_list 2>/dev/null
+		cat /proc/cpuinfo
+		date +%s%N
+		cat /proc/device-tree/serial-number 2>/dev/null
+		cat /sys/bus/i2c/devices/*/eeprom 2>/dev/null
+	} > /dev/urandom 2>/dev/null || true
+
+	# Remove old keys from rootfs image (they're shared across all devices)
+	rm -f /tmp/rootfs/etc/ssh/ssh_host_*
+
+	# Generate all key types (same as bbbio-set-sysconf)
+	# With hwrng entropy, RSA keygen completes in ~5s on AM335x
+	ssh-keygen -A -f /tmp/rootfs 2>/dev/null || true
+
 	# Remove ssh_regenerate flag so bbbio-set-sysconf skips keygen + reboot
 	rm -f /tmp/rootfs/etc/bbb.io/ssh_regenerate 2>/dev/null || true
 	message="INFO: SSH host keys generated" ; broadcast
@@ -456,9 +473,11 @@ RCEOF
 		message="INFO: Cleaned rc.local (resize commands removed)" ; broadcast
 	fi
 
+	oled_msg "Setup system" "[=========-] 90%" "Finishing up..."
 	sync
 	umount /tmp/rootfs/ || umount -l /tmp/rootfs/ || true
 	message="INFO: eMMC rootfs configuration fixed" ; broadcast
+	oled_msg "Setup system" "[==========] 100%" "Complete!"
 	message="--------------------------------------------------------------------------------" ; broadcast
 }
 
@@ -472,12 +491,16 @@ cleanup_and_shutdown () {
 	fi
 
 	message="" ; broadcast
+	# Calculate elapsed time
+	local elapsed=$(( $(date +%s) - ${FLASH_START_TIME:-0} ))
+	local mins=$(( elapsed / 60 ))
+	local secs=$(( elapsed % 60 ))
 	message="INFO: ===============================================" ; broadcast
-	message="INFO: SUCCESS: eMMC flashed successfully!" ; broadcast
+	message="INFO: SUCCESS: eMMC flashed in ${mins}m ${secs}s!" ; broadcast
 	message="INFO: ===============================================" ; broadcast
 	message="INFO: Remove SD card and reboot" ; broadcast
 	message="INFO: ===============================================" ; broadcast
-	oled_msg "Flash complete!" "Remove SD card" "and reboot."
+	oled_msg "Flash complete!" "Done in ${mins}m ${secs}s" "Remove SD card"
 	message="" ; broadcast
 
 	# All LEDs on = success
@@ -509,6 +532,7 @@ cleanup_and_shutdown () {
 stabilize_system
 startup_checks
 find_image_file
+FLASH_START_TIME=$(date +%s)
 flash_emmc
 fix_emmc_rootfs
 cleanup_and_shutdown

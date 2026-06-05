@@ -126,55 +126,38 @@ log_info "4/11: Disabling unnecessary services..."
 systemctl disable --now apt-daily-upgrade.timer 2>/dev/null || true
 systemctl disable unattended-upgrades.service 2>/dev/null || true
 systemctl disable --now apt-daily.timer 2>/dev/null || true
-log_info "   Services disabled"
+# Boot speed: iwd (WiFi manager, BBB has no WiFi) ~4.6s
+systemctl disable --now iwd.service 2>/dev/null || true
+# Boot speed: cockpit (web admin, boneIO has its own UI) ~1.9s
+systemctl disable --now cockpit.socket 2>/dev/null || true
+
+# Defer heavy services to start after boneio (less CPU contention on single-core)
+mkdir -p /etc/systemd/system/bb-usb-gadgets.service.d
+cat > /etc/systemd/system/bb-usb-gadgets.service.d/after-boneio.conf << 'EOF'
+[Unit]
+After=boneio.service
+EOF
+
+mkdir -p /etc/systemd/system/keyboard-setup.service.d
+cat > /etc/systemd/system/keyboard-setup.service.d/after-boneio.conf << 'EOF'
+[Unit]
+After=boneio.service
+EOF
+
+systemctl daemon-reload
+log_info "   Services disabled/deferred"
 
 # =============================================================================
-# STEP 5: Docker + Node-RED + Nginx setup (directories only)
+# STEP 5: Docker + Node-RED + Caddy setup (directories only)
 # =============================================================================
 log_info "5/11: Setting up Docker directories..."
 
 mkdir -p ${BONEIO_HOME}/docker/nodered/node-red/data
-mkdir -p ${BONEIO_HOME}/docker/nodered/nginx
+mkdir -p ${BONEIO_HOME}/docker/nodered/caddy/data
+mkdir -p ${BONEIO_HOME}/docker/nodered/caddy/config
 chown -R ${BONEIO_USER}:${BONEIO_USER} ${BONEIO_HOME}/docker
-log_info "   Docker directories created"
 
-# PLACEHOLDER: Docker + Nginx + journald + mosquitto + sudoers + OLED + systemd
-# files are now managed by boneio-migrate (called in STEP 9 below).
-
-# Docker logging limits — applied by migration; restart docker now
-cat > ${BONEIO_HOME}/docker/nodered/docker-compose.yaml << 'EOF'
-services:
-  node-red:
-    image: nodered/node-red:4.1.2-22-minimal
-    restart: unless-stopped
-    environment:
-      TZ: Europe/Warsaw
-    volumes:
-      - ./node-red/data:/data
-      - ./node-red/settings.js:/data/settings.js:ro
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - edge
-
-  nginx:
-    image: nginx:1.29-alpine-slim
-    restart: unless-stopped
-    depends_on:
-      - node-red
-    ports:
-      - "${NGINX_PORT:-8091}:80"
-    volumes:
-      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - edge
-
-networks:
-  edge:
-EOF
-
+# Node-RED settings (small, stable — OK to write here)
 cat > ${BONEIO_HOME}/docker/nodered/node-red/settings.js << 'EOF'
 module.exports = {
   httpAdminRoot: "/nodered",
@@ -183,61 +166,10 @@ module.exports = {
 };
 EOF
 
-cat > ${BONEIO_HOME}/docker/nodered/nginx/default.conf << 'EOF'
-map $http_upgrade $connection_upgrade {
-    default upgrade;
-    '' close;
-}
-
-upstream boneio {
-    server host.docker.internal:8090;
-}
-
-upstream nodered {
-    server node-red:1880;
-}
-
-server {
-    listen 80;
-
-    error_page 502 503 504 /502.html;
-    location = /502.html {
-        root /usr/share/nginx/html;
-        internal;
-    }
-
-    location = /nodered-status {
-        default_type application/json;
-        add_header X-NodeRed-Available "true" always;
-        add_header Access-Control-Expose-Headers "X-NodeRed-Available" always;
-        return 200 '{"available": true}';
-    }
-
-    location /nodered/ {
-        proxy_pass http://nodered;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        add_header X-NodeRed-Available "true" always;
-    }
-
-    location / {
-        proxy_pass http://boneio;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    }
-}
-EOF
-
 chown -R ${BONEIO_USER}:${BONEIO_USER} ${BONEIO_HOME}/docker
-log_info "   Docker environment configured"
+log_info "   Docker directories created"
+# NOTE: docker-compose.yaml, caddy config files (init-certs.sh, 502.html)
+# are installed by boneio-migrate in STEP 9 below.
 
 # Docker logging limits
 cat > /etc/docker/daemon.json << 'EOF'
@@ -259,8 +191,8 @@ log_info "6/11: Bootstrapping Mosquitto passwd file..."
 systemctl stop mosquitto 2>/dev/null || true
 rm -f /var/lib/mosquitto/mosquitto.db /var/lib/mosquitto/*.db
 touch /etc/mosquitto/passwd
-chmod 0600 /etc/mosquitto/passwd
-chown mosquitto:mosquitto /etc/mosquitto/passwd
+chown root:mosquitto /etc/mosquitto/passwd
+chmod 0640 /etc/mosquitto/passwd
 mosquitto_passwd -b /etc/mosquitto/passwd boneio boneio123
 mosquitto_passwd -b /etc/mosquitto/passwd homeassistant boneio123
 mosquitto_passwd -b /etc/mosquitto/passwd mqtt boneio123
@@ -299,10 +231,17 @@ python3 -m venv ${BONEIO_HOME}/boneio/venv
 ${BONEIO_HOME}/boneio/venv/bin/pip install --upgrade pip
 ${BONEIO_HOME}/boneio/venv/bin/pip install --upgrade boneio
 
-# Copy example configs
+# Copy example configs (exclude __init__.py and __pycache__ to avoid
+# creating a shadow 'boneio' package in /home/boneio/boneio/ that would
+# hide the real one in site-packages and break migrations imports)
 BONEIO_PKG_PATH=$(${BONEIO_HOME}/boneio/venv/bin/python -c "import boneio; print(boneio.__path__[0])")
 if [ -d "${BONEIO_PKG_PATH}/example_config" ]; then
+    rsync -a --exclude='__init__.py' --exclude='__pycache__' \
+        ${BONEIO_PKG_PATH}/example_config/ ${BONEIO_HOME}/boneio/ 2>/dev/null || \
     cp -r ${BONEIO_PKG_PATH}/example_config/* ${BONEIO_HOME}/boneio/ 2>/dev/null || true
+    # Safety: remove __init__.py if it leaked (breaks boneio.migrations import)
+    rm -f ${BONEIO_HOME}/boneio/__init__.py
+    rm -rf ${BONEIO_HOME}/boneio/__pycache__
 fi
 
 chown -R ${BONEIO_USER}:${BONEIO_USER} ${BONEIO_HOME}/boneio
@@ -323,18 +262,83 @@ for F in $BONEIO_INSTALL_HELPER; do BONEIO_INSTALL_HELPER="$F"; break; done
 
 if [ -f "${BONEIO_INSTALL_HELPER}" ]; then
     bash "${BONEIO_INSTALL_HELPER}" "${BONEIO_MIGRATE_HELPER}" "${BONEIO_MIGRATE_SUDOERS}"
-    # Apply all migrations via MigrationRunner (boneio-migrate helper expects JSON on stdin,
-    # not CLI args — the runner generates the JSON plan and pipes it to the helper).
-    sudo -u ${BONEIO_USER} ${BONEIO_HOME}/boneio/venv/bin/python3 -c "
+    # Apply all migrations via MigrationRunner.
+    # We run as root (setup_boneio.sh is already root) so boneio-migrate helper
+    # can write to /etc/systemd, /usr/sbin, etc. without sudoers issues.
+    log_info "   Applying system migrations..."
+    VENV_DIR="${BONEIO_HOME}/boneio/venv"
+    log_info "   Using venv: ${VENV_DIR}"
+    log_info "   Python: $(${VENV_DIR}/bin/python3 --version 2>&1)"
+
+    # CRITICAL: must cd away from /home/boneio/ before running Python!
+    # /home/boneio/boneio/ directory shadows the real boneio package
+    # via Python 3.3+ namespace packages (even without __init__.py).
+    cd /tmp
+
+    # Also force-remove __init__.py if it leaked from example_config copy
+    if [ -f "${BONEIO_HOME}/boneio/__init__.py" ]; then
+        log_warn "   Removing shadow __init__.py from ${BONEIO_HOME}/boneio/"
+        rm -f "${BONEIO_HOME}/boneio/__init__.py"
+    fi
+    rm -rf "${BONEIO_HOME}/boneio/__pycache__"
+
+    # Verify boneio.migrations is importable
+    ${VENV_DIR}/bin/python3 -c "import boneio.migrations; print(f'migrations at: {boneio.migrations.__file__}')" 2>&1 || {
+        log_error "   boneio.migrations not importable! Checking sys.path:"
+        ${VENV_DIR}/bin/python3 -c "import sys; print('\n'.join(sys.path))" 2>&1
+        log_error "   CWD: $(pwd)"
+        log_error "   Listing site-packages:"
+        ls ${VENV_DIR}/lib/python*/site-packages/boneio/ 2>&1 || true
+    }
+    ${VENV_DIR}/bin/python3 -c "
+import logging, sys
+logging.basicConfig(level=logging.INFO, stream=sys.stdout, format='%(levelname)s: %(message)s')
 from boneio.migrations.runner import MigrationRunner
 r = MigrationRunner()
-r.apply_all()
-" || true
+ok = r.apply_all()
+if not ok:
+    print('ERROR: Migration apply_all() returned False', file=sys.stderr)
+    sys.exit(1)
+print(f'Migrations applied. Status: {r.status}')
+"
+    if [ $? -ne 0 ]; then
+        log_error "   Migration apply failed!"
+        log_error "   Check /var/log/boneio-migrate.log for details"
+    else
+        log_info "   All migrations applied successfully"
+    fi
 else
     log_warn "boneio-migrate bootstrap not found, skipping migration apply"
 fi
 
 log_info "   BoneIO application installed"
+
+# Copy docker-compose.yaml from package (migration doesn't install it to avoid
+# overwriting cloud users' compose on upgrade — but new installs need it)
+log_info "   Installing docker-compose.yaml from package..."
+cd /tmp
+${BONEIO_HOME}/boneio/venv/bin/python3 -c "
+from importlib.resources import files
+src = files('boneio.core.cloud.data').joinpath('docker-compose.yaml')
+print(src.read_text(), end='')
+" > ${BONEIO_HOME}/docker/nodered/docker-compose.yaml
+chown ${BONEIO_USER}:${BONEIO_USER} ${BONEIO_HOME}/docker/nodered/docker-compose.yaml
+
+# Pull Docker images so Node-RED + Caddy work out of the box
+log_info "   Starting Docker daemon..."
+# Clean stale bridge state (prevents 'networks have same bridge name' error)
+systemctl stop docker 2>/dev/null || true
+ip link delete docker0 2>/dev/null || true
+rm -rf /var/lib/docker/network 2>/dev/null || true
+systemctl start docker 2>/dev/null || true
+log_info "   Pulling Docker images (Node-RED + Caddy)..."
+export HOSTNAME=$(hostname)
+cd ${BONEIO_HOME}/docker/nodered
+docker compose pull 2>&1 || log_warn "   Docker image pull failed (will retry on first boot)"
+docker compose up -d 2>&1 || log_warn "   Docker compose up failed"
+log_info "   Docker containers started"
+# NOTE: Don't 'docker compose stop' before poweroff — restart:unless-stopped
+# needs containers to have been running to auto-start on next boot.
 
 # =============================================================================
 # STEP 10: Device Tree Overlay
@@ -354,14 +358,27 @@ fi
 chmod +x build_boneio_black_pins.sh Makefile
 ./build_boneio_black_pins.sh
 
-# Configure uEnv.txt
+# Configure uEnv.txt — works regardless of whether lines are commented or not
+UENV="/boot/firmware/uEnv.txt"
+if [ ! -f "$UENV" ]; then
+    UENV="/boot/uEnv.txt"
+fi
+
+# Ensure enable_uboot_overlays=1 is uncommented
+sed -i 's/^#enable_uboot_overlays=1/enable_uboot_overlays=1/' "$UENV"
+
+# Add overlay if not already present
+if ! grep -q 'uboot_overlay_addr0=BONEIO-BLACK-PINS.dtbo' "$UENV"; then
+    sed -i '/^enable_uboot_overlays=1/a uboot_overlay_addr0=BONEIO-BLACK-PINS.dtbo' "$UENV"
+fi
+
+# Uncomment disable lines (idempotent — works if already uncommented)
 sed -i \
-    -e 's/#enable_uboot_overlays=1/enable_uboot_overlays=1\nuboot_overlay_addr0=BONEIO-BLACK-PINS.dtbo/' \
-    -e 's/#disable_uboot_overlay_video=1/disable_uboot_overlay_video=1/' \
-    -e 's/#disable_uboot_overlay_audio=1/disable_uboot_overlay_audio=1/' \
-    -e 's/#disable_uboot_overlay_wireless=1/disable_uboot_overlay_wireless=1/' \
+    -e 's/^#disable_uboot_overlay_video=1/disable_uboot_overlay_video=1/' \
+    -e 's/^#disable_uboot_overlay_audio=1/disable_uboot_overlay_audio=1/' \
+    -e 's/^#disable_uboot_overlay_wireless=1/disable_uboot_overlay_wireless=1/' \
     -e 's/^uboot_overlay_pru=/#uboot_overlay_pru=/' \
-    /boot/uEnv.txt
+    "$UENV"
 
 log_info "   Device Tree Overlay installed"
 
@@ -378,6 +395,38 @@ if $NO_CLEANUP; then
     echo "================================================================================"
     exit 0
 fi
+
+log_info "Validating installation..."
+VALIDATE_OK=true
+for check_path in \
+    "/etc/systemd/system/boneio.service" \
+    "${BONEIO_HOME}/boneio/venv/bin/python3" \
+    "/usr/sbin/oled_msg.py" \
+    "/usr/sbin/oled_msg.sh" \
+    "/usr/sbin/boneio-migrate"; do
+    if [ -e "$check_path" ] || [ -L "$check_path" ]; then
+        log_info "   ✅ $check_path"
+    else
+        log_error "   ❌ MISSING: $check_path"
+        VALIDATE_OK=false
+    fi
+done
+
+# Check boneio package is importable
+cd /tmp
+BONEIO_VER=$(${BONEIO_HOME}/boneio/venv/bin/python3 -c "from boneio.version import __version__; print(__version__)" 2>/dev/null || echo "FAIL")
+if [ "$BONEIO_VER" = "FAIL" ]; then
+    log_error "   ❌ boneio package not importable!"
+    VALIDATE_OK=false
+else
+    log_info "   ✅ boneio ${BONEIO_VER} installed"
+fi
+
+if [ "$VALIDATE_OK" = false ]; then
+    log_error "Validation failed! Aborting (system will NOT shutdown)."
+    exit 1
+fi
+log_info "Validation passed ✅"
 
 log_info "11/11: Running final cleanup..."
 

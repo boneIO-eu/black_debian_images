@@ -15,19 +15,25 @@ set -e
 SOURCE_IMAGE=""
 VERSION="1.0.1"
 GENERATE_EMMC_FLASHER=false
+ONLY_DEVICE=""
 
-for arg in "$@"; do
-    case $arg in
+while [ $# -gt 0 ]; do
+    case $1 in
         --emmc-flasher)
             GENERATE_EMMC_FLASHER=true
             shift
             ;;
+        --only)
+            ONLY_DEVICE="$2"
+            shift 2
+            ;;
         *)
             if [ -z "$SOURCE_IMAGE" ]; then
-                SOURCE_IMAGE="$arg"
-            elif [[ "$arg" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-                VERSION="$arg"
+                SOURCE_IMAGE="$1"
+            elif [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                VERSION="$1"
             fi
+            shift
             ;;
     esac
 done
@@ -139,18 +145,21 @@ mount_image() {
     partprobe "$LOOP_DEVICE" 2>/dev/null || true
     sleep 1
     
-    # Find rootfs partition (ext4)
+    # Find rootfs partition (ext4) — take LAST ext4 partition
+    # BBB Debian images have small p2 (ext4) + main rootfs p3 (ext4)
     ROOTFS_PARTITION=""
     for part in "${LOOP_DEVICE}p"*; do
         if [ -e "$part" ]; then
             FS_TYPE=$(blkid -s TYPE -o value "$part" 2>/dev/null || echo "unknown")
             if [ "$FS_TYPE" = "ext4" ] || [ "$FS_TYPE" = "ext3" ]; then
                 ROOTFS_PARTITION="$part"
-                print_info "Found rootfs partition: $ROOTFS_PARTITION ($FS_TYPE)"
-                break
+                # Don't break — keep iterating to find the LAST (main) ext4 partition
             fi
         fi
     done
+    if [ -n "$ROOTFS_PARTITION" ]; then
+        print_info "Found rootfs partition: $ROOTFS_PARTITION"
+    fi
     
     if [ -z "$ROOTFS_PARTITION" ]; then
         print_error "Could not find rootfs partition!"
@@ -247,6 +256,13 @@ apply_device_config() {
     print_info "Removing old config YAMLs and state from $boneio_config_dir..."
     rm -f "$boneio_config_dir"/*.yaml
     rm -f "$boneio_config_dir"/state.json
+    # Remove example_config subdirectories (left over from setup_boneio.sh)
+    # and __init__.py which creates a shadow 'boneio' package breaking imports
+    rm -f "$boneio_config_dir"/__init__.py
+    rm -rf "$boneio_config_dir"/__pycache__
+    for subdir in 24x16 32x10 48x4 cover cover_mix different_configs; do
+        rm -rf "$boneio_config_dir/$subdir"
+    done
     
     # Copy new config files for this variant
     print_info "Applying $device_name config from $example_dir..."
@@ -322,7 +338,7 @@ create_emmc_flasher() {
             if [ "$fs_type" = "ext4" ] || [ "$fs_type" = "ext3" ]; then
                 rootfs_part="$part"
                 part_num="$i"
-                break
+                # Don't break — take the LAST ext4 (main rootfs, typically p3)
             fi
         fi
     done
@@ -394,7 +410,7 @@ create_emmc_flasher() {
     
     # Compress flasher image
     print_info "Compressing flasher image with xz..."
-    xz -9 -T0 -v "$flasher_name"
+    xz -9f -T0 -v "$flasher_name"
     
     # Change ownership
     if [ -n "$ACTUAL_UID" ] && [ -n "$ACTUAL_GID" ]; then
@@ -446,7 +462,7 @@ process_device_type() {
     
     # Step 6: Compress with xz
     print_info "Compressing $output_name with xz (this may take a while)..."
-    xz -9 -T0 -v "$output_name"
+    xz -9f -T0 -v "$output_name"
     
     # Step 7: Change ownership to actual user
     if [ -n "$ACTUAL_UID" ] && [ -n "$ACTUAL_GID" ]; then
@@ -484,10 +500,17 @@ echo "Source image:      $SOURCE_IMAGE"
 echo "Version:           $VERSION"
 echo "Output directory:  $OUTPUT_DIR"
 echo "Generate flasher:  $GENERATE_EMMC_FLASHER"
+if [ -n "$ONLY_DEVICE" ]; then
+    echo "Only device:       $ONLY_DEVICE"
+fi
 echo ""
 
 # Process each device type
 for device_name in "${!DEVICE_TYPES[@]}"; do
+    # Skip devices not matching --only filter
+    if [ -n "$ONLY_DEVICE" ] && [ "$device_name" != "$ONLY_DEVICE" ]; then
+        continue
+    fi
     process_device_type "$device_name" "${DEVICE_TYPES[$device_name]}"
 done
 

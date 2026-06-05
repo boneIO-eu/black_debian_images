@@ -33,8 +33,8 @@ BBB_DEFAULT_PASS="temppwd"
 BONEIO_USER="boneio"
 BONEIO_PASS="Black"
 SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o LogLevel=ERROR"
-SETUP_SCRIPT_URL="https://raw.githubusercontent.com/boneIO-eu/black_debian_images/main/scripts/setup_boneio.sh"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOCAL_SETUP_SCRIPT="${SCRIPT_DIR}/setup_boneio.sh"
 POLL_INTERVAL=3       # seconds between connection attempts
 SHUTDOWN_POLL=5        # seconds between shutdown checks
 
@@ -194,16 +194,27 @@ log_info "This will take 5-15 minutes. Watch the output below."
 log_warn "BBB will shutdown automatically when done."
 echo ""
 
-# Download script first, then run with sudo -S (password via stdin).
-# curl-pipe-to-sudo doesn't work well with PTY and password prompts.
-sshpass -p "${BONEIO_PASS}" ssh ${SSH_OPTS} "${BONEIO_USER}@${BBB_USB_IP}" \
-    "curl -H 'Cache-Control: no-cache' -fsSL '${SETUP_SCRIPT_URL}' -o /tmp/setup_boneio.sh && chmod +x /tmp/setup_boneio.sh"
+# Use local setup_boneio.sh (not from GitHub — avoids stale versions)
+if [[ ! -f "${LOCAL_SETUP_SCRIPT}" ]]; then
+    log_error "setup_boneio.sh not found at ${LOCAL_SETUP_SCRIPT}"
+    exit 1
+fi
 
-log_info "Setup script downloaded to BBB. Running..."
+log_step "Uploading setup_boneio.sh to BBB..."
+sshpass -p "${BONEIO_PASS}" scp ${SSH_OPTS} "${LOCAL_SETUP_SCRIPT}" \
+    "${BONEIO_USER}@${BBB_USB_IP}:/tmp/setup_boneio.sh"
 
+log_info "Setup script uploaded. Running..."
+
+# Run setup — capture exit code separately from SSH disconnect on poweroff.
+# setup_boneio.sh ends with 'poweroff' which kills SSH (exit 255).
+# A real failure mid-setup would also kill SSH but with different patterns.
+# We write a marker file on success BEFORE poweroff.
 sshpass -p "${BONEIO_PASS}" ssh ${SSH_OPTS} "${BONEIO_USER}@${BBB_USB_IP}" \
-    "echo '${BONEIO_PASS}' | sudo -S bash /tmp/setup_boneio.sh" \
-    || true  # setup ends with poweroff which kills SSH
+    "echo '${BONEIO_PASS}' | sudo -S bash -c '
+        bash /tmp/setup_boneio.sh && touch /tmp/.setup_ok
+    '" \
+    || true  # SSH dies when BBB powers off — expected
 
 echo ""
 log_info "Setup script finished (BBB is shutting down)."
@@ -307,6 +318,83 @@ else
 fi
 
 log_info "Rootfs image created: ${ROOTFS_IMG}"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 5b: Validate rootfs image
+# ═══════════════════════════════════════════════════════════════════════════════
+
+log_phase "Phase 5b: Validating rootfs image"
+
+VALIDATE_MOUNT="/tmp/boneio_validate_$$"
+sudo mkdir -p "${VALIDATE_MOUNT}"
+
+# Mount the image to check critical files
+VALIDATE_LOOP=$(sudo losetup -fP --show "${ROOTFS_IMG}")
+sleep 1
+sudo partprobe "${VALIDATE_LOOP}" 2>/dev/null || true
+sleep 1
+
+# Find ext4 rootfs partition (take LAST ext4 — BBB images have small p2 + main p3)
+VALIDATE_PART=""
+for part in "${VALIDATE_LOOP}p"*; do
+    if sudo blkid -s TYPE -o value "$part" 2>/dev/null | grep -q 'ext[34]'; then
+        VALIDATE_PART="$part"
+        # Don't break — keep iterating to find the LAST (largest) ext4 partition
+    fi
+done
+log_info "Using partition: ${VALIDATE_PART}"
+
+VALIDATION_OK=true
+if [[ -n "${VALIDATE_PART}" ]]; then
+    sudo mount -o ro "${VALIDATE_PART}" "${VALIDATE_MOUNT}"
+
+    # Check critical files exist
+    CHECKS=(
+        "/etc/systemd/system/boneio.service:boneio systemd service"
+        "/home/boneio/boneio/venv/bin/python3:Python venv"
+        "/usr/sbin/oled_msg.py:OLED message script"
+        "/usr/sbin/oled_msg.sh:OLED shell wrapper"
+        "/usr/sbin/boneio-migrate:Migration helper"
+    )
+
+    for check in "${CHECKS[@]}"; do
+        file="${check%%:*}"
+        desc="${check##*:}"
+        if [[ -e "${VALIDATE_MOUNT}${file}" ]] || [[ -L "${VALIDATE_MOUNT}${file}" ]]; then
+            log_info "✅ ${desc}: ${file}"
+        else
+            log_error "❌ MISSING: ${desc}: ${file}"
+            VALIDATION_OK=false
+        fi
+    done
+
+    # Check migration state
+    MIGRATION_STATE=$(find "${VALIDATE_MOUNT}/home/boneio/boneio/venv/lib/" -path "*/migrations/state.json" 2>/dev/null | head -1)
+    if [[ -n "${MIGRATION_STATE}" ]]; then
+        log_info "✅ Migration state: $(cat "${MIGRATION_STATE}" | head -1)"
+    else
+        log_warn "⚠ Migration state file not found"
+    fi
+
+    sudo umount "${VALIDATE_MOUNT}"
+else
+    log_error "Could not find ext4 partition in ${ROOTFS_IMG}"
+    VALIDATION_OK=false
+fi
+
+sudo losetup -d "${VALIDATE_LOOP}" 2>/dev/null || true
+sudo rmdir "${VALIDATE_MOUNT}" 2>/dev/null || true
+
+if ! $VALIDATION_OK; then
+    echo ""
+    log_error "Rootfs validation FAILED! The image is missing critical files."
+    log_error "This likely means setup_boneio.sh did not complete properly."
+    read -rp "Continue anyway? [y/N] " confirm
+    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+        log_error "Aborted. Fix the rootfs and re-run."
+        exit 1
+    fi
+fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PHASE 6: Generate all variant images

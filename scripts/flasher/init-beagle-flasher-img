@@ -350,9 +350,11 @@ fix_emmc_rootfs () {
 	message="INFO: Expanding partition ${media_rootfs} on ${DESTINATION}..." ; broadcast
 	oled_msg "Setup system" "[==---------] 15%" "Expanding partition"
 	if command -v growpart >/dev/null 2>&1; then
+		oled_msg "Setup system" "[===--------] 16%" "Growpart"
 		growpart ${DESTINATION} ${media_rootfs} || true
 		message="INFO: growpart done" ; broadcast
 	else
+		oled_msg "Setup system" "[===--------] 16%" "Sfdisk"
 		message="INFO: growpart not available, using sfdisk..." ; broadcast
 		echo ", +" | sfdisk -N ${media_rootfs} ${DESTINATION} --force 2>/dev/null || true
 	fi
@@ -362,8 +364,25 @@ fix_emmc_rootfs () {
 	# Resize ext4 filesystem to fill expanded partition
 	message="INFO: Resizing filesystem on ${EMMC_ROOTFS}..." ; broadcast
 	oled_msg "Setup system" "[===--------] 30%" "Resizing filesystem"
-	e2fsck -f -y ${EMMC_ROOTFS} 2>/dev/null || true
-	resize2fs ${EMMC_ROOTFS} || true
+	message="INFO: Running e2fsck on ${EMMC_ROOTFS}..." ; broadcast
+	e2fsck -f -y ${EMMC_ROOTFS} || message="WARNING: e2fsck returned non-zero (may be OK)" ; broadcast
+	message="INFO: Running resize2fs on ${EMMC_ROOTFS}..." ; broadcast
+	RESIZE_OK=false
+	if resize2fs ${EMMC_ROOTFS}; then
+		message="INFO: resize2fs succeeded" ; broadcast
+		RESIZE_OK=true
+	else
+		message="WARNING: resize2fs failed! Will add first-boot fallback." ; broadcast
+		oled_msg "Setup system" "[===--------] 30%" "Resize deferred"
+		sleep 2
+	fi
+	# Verify new size
+	NEW_BLOCKS=$(dumpe2fs -h ${EMMC_ROOTFS} 2>/dev/null | grep 'Block count' | awk '{print $3}')
+	NEW_BLOCK_SIZE=$(dumpe2fs -h ${EMMC_ROOTFS} 2>/dev/null | grep 'Block size' | awk '{print $3}')
+	if [ -n "$NEW_BLOCKS" ] && [ -n "$NEW_BLOCK_SIZE" ]; then
+		NEW_SIZE_MB=$(( NEW_BLOCKS * NEW_BLOCK_SIZE / 1024 / 1024 ))
+		message="INFO: Filesystem size after resize: ${NEW_SIZE_MB} MB" ; broadcast
+	fi
 	message="INFO: Filesystem resize complete" ; broadcast
 
 	mkdir -p /tmp/rootfs/ || true
@@ -460,8 +479,9 @@ fix_emmc_rootfs () {
 	rm -f /tmp/rootfs/etc/bbb.io/ssh_regenerate 2>/dev/null || true
 	message="INFO: SSH host keys generated" ; broadcast
 
-	# Clean rc.local from pishrink fdisk/resize commands (reference wrong device)
-	if [ -f /tmp/rootfs/etc/rc.local ] ; then
+	# Write rc.local: if resize2fs failed in flasher, add first-boot fallback
+	if [ "$RESIZE_OK" = true ]; then
+		# Resize succeeded — clean rc.local
 		cat > /tmp/rootfs/etc/rc.local <<'RCEOF'
 #!/bin/sh -e
 #
@@ -470,7 +490,26 @@ fix_emmc_rootfs () {
 exit 0
 RCEOF
 		chmod +x /tmp/rootfs/etc/rc.local
-		message="INFO: Cleaned rc.local (resize commands removed)" ; broadcast
+		message="INFO: Cleaned rc.local (resize done in flasher)" ; broadcast
+	else
+		# Resize failed — add first-boot resize fallback
+		cat > /tmp/rootfs/etc/rc.local <<RCEOF
+#!/bin/sh -e
+# First-boot filesystem resize (flasher resize2fs failed)
+ROOTDEV="${EMMC_ROOTFS}"
+if [ -b "\$ROOTDEV" ]; then
+    logger -t rc.local "Resizing filesystem on \$ROOTDEV..."
+    resize2fs \$ROOTDEV && logger -t rc.local "Filesystem resize complete"
+fi
+# Self-remove: only run once
+cat > /etc/rc.local <<'EOF2'
+#!/bin/sh -e
+exit 0
+EOF2
+exit 0
+RCEOF
+		chmod +x /tmp/rootfs/etc/rc.local
+		message="INFO: Added first-boot resize2fs fallback to rc.local" ; broadcast
 	fi
 
 	oled_msg "Setup system" "[=========-] 90%" "Finishing up..."

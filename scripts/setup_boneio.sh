@@ -452,6 +452,9 @@ touch /etc/bbb.io/ssh_regenerate
 find /var/log -type f -exec truncate -s 0 {} \;
 rm -rf /tmp/*
 rm -rf /var/tmp/*
+# Clear mosquitto retained messages (boneio may have published during setup)
+systemctl stop mosquitto 2>/dev/null || true
+rm -f /var/lib/mosquitto/mosquitto.db /var/lib/mosquitto/*.db
 
 # Clear bash history
 history -c

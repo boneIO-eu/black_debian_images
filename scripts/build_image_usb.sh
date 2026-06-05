@@ -2,12 +2,13 @@
 ## BoneIO Black — Automated Image Builder
 ##
 ## Usage:
-##   ./build_image_usb.sh <version> [--sd-device /dev/sdX] [--from-phase N]
+##   ./build_image_usb.sh <version> [--sd-device /dev/sdX] [--from-phase N] [--only 32x10]
 ##
 ## Example:
 ##   ./build_image_usb.sh 1.4.2
 ##   ./build_image_usb.sh 1.4.2 --sd-device /dev/sdb
-##   ./build_image_usb.sh 1.4.2 --from-phase 5 --sd-device /dev/sdb  # resume
+##   ./build_image_usb.sh 1.4.2 --only 32x10                             # single variant
+##   ./build_image_usb.sh 1.4.2 --from-phase 5 --sd-device /dev/sdb      # resume
 ##
 ## This script automates the full image creation pipeline:
 ##   Phase 1: Wait for BBB on USB (192.168.7.2)
@@ -58,6 +59,7 @@ log_step()  { echo -e "${CYAN}  ➜${NC} $1"; }
 VERSION=""
 SD_DEVICE=""
 FROM_PHASE=1
+ONLY_DEVICE=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -67,6 +69,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --from-phase)
             FROM_PHASE="$2"
+            shift 2
+            ;;
+        --only)
+            ONLY_DEVICE="$2"
             shift 2
             ;;
         --help|-h)
@@ -403,7 +409,11 @@ fi
 log_phase "Phase 6/6: Generating hardware variant images"
 
 if [[ -f "${SCRIPT_DIR}/generate_all_images.sh" ]]; then
-    sudo bash "${SCRIPT_DIR}/generate_all_images.sh" "${ROOTFS_IMG}" "${VERSION}" --emmc-flasher
+    GENERATE_ARGS=("${ROOTFS_IMG}" "${VERSION}" "--emmc-flasher")
+    if [[ -n "${ONLY_DEVICE}" ]]; then
+        GENERATE_ARGS+=("--only" "${ONLY_DEVICE}")
+    fi
+    sudo bash "${SCRIPT_DIR}/generate_all_images.sh" "${GENERATE_ARGS[@]}"
 else
     log_error "generate_all_images.sh not found in ${SCRIPT_DIR}"
     exit 1

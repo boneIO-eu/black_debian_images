@@ -30,7 +30,7 @@ while [ $# -gt 0 ]; do
         *)
             if [ -z "$SOURCE_IMAGE" ]; then
                 SOURCE_IMAGE="$1"
-            elif [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            elif [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
                 VERSION="$1"
             fi
             shift

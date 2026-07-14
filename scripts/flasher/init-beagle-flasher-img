@@ -140,6 +140,18 @@ stabilize_system () {
 	# Load I2C module for OLED display
 	modprobe i2c-dev 2>/dev/null || true
 
+	# Silence buzzer on v1.0 boards (P9_12 = gpio1[28] = GPIO 60)
+	# The default overlay (v0.4-v0.8) configures P9_12 as w1-gpio with pullup,
+	# which causes the buzzer to sound on v1.0 hardware. Force it LOW immediately.
+	if [ -d /sys/class/gpio ]; then
+		echo 60 > /sys/class/gpio/export 2>/dev/null || true
+		if [ -d /sys/class/gpio/gpio60 ]; then
+			echo out > /sys/class/gpio/gpio60/direction 2>/dev/null || true
+			echo 0 > /sys/class/gpio/gpio60/value 2>/dev/null || true
+			message="INFO: Silenced buzzer (GPIO 60 / P9_12 -> LOW)" ; broadcast
+		fi
+	fi
+
 	# Start OLED daemon (keeps Python+luma in memory for flicker-free updates)
 	oled_start_daemon
 
@@ -417,6 +429,72 @@ fix_emmc_rootfs () {
 	if [ -f /tmp/rootfs/boot/uEnv.txt ]; then
 		sed -i -e 's:cmdline=init:#cmdline=init:g' /tmp/rootfs/boot/uEnv.txt
 		message="INFO: Disabled flasher cmdline in eMMC uEnv.txt" ; broadcast
+	fi
+
+	# =========================================================================
+	# Auto-detect board version via I2C probe
+	# DS2484 1-Wire bridge at 0x18 on I2C2 = board v1.0+
+	# No DS2484 = board v0.4-v0.8 (GPIO 1-Wire)
+	# =========================================================================
+	oled_msg "Setup system" "[======-----] 62%" "Detecting board"
+	message="INFO: Probing I2C2 for DS2484 (0x18)..." ; broadcast
+
+	# Ensure I2C bus is available
+	modprobe i2c-dev 2>/dev/null || true
+	sleep 1
+
+	BOARD_HAS_DS2484=false
+	if command -v i2cdetect >/dev/null 2>&1; then
+		# Probe address 0x18 on I2C bus 2 (quick mode, single address)
+		if i2cdetect -y -r 2 0x18 0x18 2>/dev/null | grep -q "18"; then
+			BOARD_HAS_DS2484=true
+			message="INFO: DS2484 detected at 0x18 on I2C2 -> board v1.0+" ; broadcast
+		else
+			message="INFO: No DS2484 at 0x18 -> board v0.4-v0.8 (GPIO 1-Wire)" ; broadcast
+		fi
+	elif [ -e /dev/i2c-2 ]; then
+		# Fallback: raw I2C probe without i2cdetect
+		# Try reading from address 0x18 - if device is present, read succeeds
+		if python3 -c "
+import struct, fcntl, os
+I2C_SLAVE = 0x0703
+fd = os.open('/dev/i2c-2', os.O_RDWR)
+fcntl.ioctl(fd, I2C_SLAVE, 0x18)
+try:
+    os.read(fd, 1)
+    print('found')
+except:
+    print('none')
+finally:
+    os.close(fd)
+" 2>/dev/null | grep -q "found"; then
+			BOARD_HAS_DS2484=true
+			message="INFO: DS2484 detected (raw probe) -> board v1.0+" ; broadcast
+		else
+			message="INFO: No DS2484 (raw probe) -> board v0.4-v0.8" ; broadcast
+		fi
+	else
+		message="WARNING: Cannot probe I2C2 (no i2cdetect, no /dev/i2c-2). Using default overlay." ; broadcast
+	fi
+
+	# Select overlay based on board detection
+	UENV_FILE=""
+	if [ -f /tmp/rootfs/boot/firmware/uEnv.txt ]; then
+		UENV_FILE="/tmp/rootfs/boot/firmware/uEnv.txt"
+	elif [ -f /tmp/rootfs/boot/uEnv.txt ]; then
+		UENV_FILE="/tmp/rootfs/boot/uEnv.txt"
+	fi
+
+	if [ -n "$UENV_FILE" ] && [ "$BOARD_HAS_DS2484" = true ]; then
+		message="INFO: Switching overlay to BONEIO-BLACK-PINS-v1.0.dtbo" ; broadcast
+		oled_msg "Setup system" "[======-----] 64%" "Board v1.0 overlay"
+		# Replace any existing BONEIO-BLACK-PINS overlay reference
+		sed -i \
+			-e 's|uboot_overlay_addr0=.*BONEIO-BLACK-PINS[^ ]*|uboot_overlay_addr0=BONEIO-BLACK-PINS-v1.0.dtbo|' \
+			"$UENV_FILE"
+		message="INFO: Overlay set to BONEIO-BLACK-PINS-v1.0.dtbo" ; broadcast
+	elif [ -n "$UENV_FILE" ]; then
+		message="INFO: Keeping default overlay (BONEIO-BLACK-PINS.dtbo)" ; broadcast
 	fi
 
 	# Update generic-sys-mods if present

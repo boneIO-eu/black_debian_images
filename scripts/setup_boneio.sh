@@ -123,9 +123,20 @@ log_info "   Unnecessary packages removed"
 # STEP 4: Disable unnecessary timers
 # =============================================================================
 log_info "4/11: Disabling unnecessary services..."
-systemctl disable --now apt-daily-upgrade.timer 2>/dev/null || true
+# Kill apt auto-update processes first — they may hold dpkg locks and cause
+# 'systemctl stop' to hang indefinitely on slow storage.
+systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+systemctl kill --signal=TERM unattended-upgrades.service 2>/dev/null || true
+systemctl kill --signal=TERM apt-daily.service 2>/dev/null || true
+# Wait for dpkg lock to be released (max 60s)
+for i in $(seq 1 60); do
+    if ! fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then break; fi
+    [ "$i" = "1" ] && log_info "   Waiting for dpkg lock to be released..."
+    sleep 1
+done
+systemctl disable apt-daily-upgrade.timer 2>/dev/null || true
 systemctl disable unattended-upgrades.service 2>/dev/null || true
-systemctl disable --now apt-daily.timer 2>/dev/null || true
+systemctl disable apt-daily.timer 2>/dev/null || true
 # Boot speed: iwd (WiFi manager, BBB has no WiFi) ~4.6s
 systemctl disable --now iwd.service 2>/dev/null || true
 # Boot speed: cockpit (web admin, boneIO has its own UI) ~1.9s

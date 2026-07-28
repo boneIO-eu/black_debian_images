@@ -178,8 +178,8 @@ log_info "6/11: Bootstrapping Mosquitto passwd file..."
 systemctl stop mosquitto 2>/dev/null || true
 rm -f /var/lib/mosquitto/mosquitto.db /var/lib/mosquitto/*.db
 touch /etc/mosquitto/passwd
-chown root:mosquitto /etc/mosquitto/passwd
-chmod 0640 /etc/mosquitto/passwd
+chown root:root /etc/mosquitto/passwd
+chmod 0600 /etc/mosquitto/passwd
 mosquitto_passwd -b /etc/mosquitto/passwd boneio boneio123
 mosquitto_passwd -b /etc/mosquitto/passwd homeassistant boneio123
 mosquitto_passwd -b /etc/mosquitto/passwd mqtt boneio123
@@ -216,7 +216,7 @@ log_info "9/11: Installing BoneIO application..."
 mkdir -p ${BONEIO_HOME}/boneio
 python3 -m venv ${BONEIO_HOME}/boneio/venv
 ${BONEIO_HOME}/boneio/venv/bin/pip install --upgrade pip
-${BONEIO_HOME}/boneio/venv/bin/pip install --upgrade boneio
+${BONEIO_HOME}/boneio/venv/bin/pip install --upgrade --pre boneio
 
 # Copy example configs (exclude __init__.py and __pycache__ to avoid
 # creating a shadow 'boneio' package in /home/boneio/boneio/ that would
@@ -321,6 +321,9 @@ systemctl start docker 2>/dev/null || true
 log_info "   Pulling Docker images (Node-RED + Caddy)..."
 export HOSTNAME=$(hostname)
 cd ${BONEIO_HOME}/docker/nodered
+# Remove stale containers/networks from previous image runs
+docker compose down --remove-orphans 2>&1 || true
+docker network prune -f 2>/dev/null || true
 docker compose pull 2>&1 || log_warn "   Docker image pull failed (will retry on first boot)"
 docker compose up -d 2>&1 || log_warn "   Docker compose up failed"
 log_info "   Docker containers started"

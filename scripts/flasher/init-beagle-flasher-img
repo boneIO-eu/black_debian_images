@@ -377,16 +377,31 @@ fix_emmc_rootfs () {
 	message="INFO: Resizing filesystem on ${EMMC_ROOTFS}..." ; broadcast
 	oled_msg "Setup system" "[===--------] 30%" "Resizing filesystem"
 	message="INFO: Running e2fsck on ${EMMC_ROOTFS}..." ; broadcast
-	e2fsck -f -y ${EMMC_ROOTFS} || message="WARNING: e2fsck returned non-zero (may be OK)" ; broadcast
+	# e2fsck exit codes: 0=clean, 1=errors corrected (OK), 2+=problem
+	e2fsck -f -y ${EMMC_ROOTFS}
+	E2FSCK_RC=$?
+	if [ $E2FSCK_RC -gt 1 ]; then
+		message="WARNING: e2fsck returned $E2FSCK_RC" ; broadcast
+	else
+		message="INFO: e2fsck OK (rc=$E2FSCK_RC)" ; broadcast
+	fi
 	message="INFO: Running resize2fs on ${EMMC_ROOTFS}..." ; broadcast
 	RESIZE_OK=false
 	if resize2fs ${EMMC_ROOTFS}; then
 		message="INFO: resize2fs succeeded" ; broadcast
 		RESIZE_OK=true
 	else
-		message="WARNING: resize2fs failed! Will add first-boot fallback." ; broadcast
-		oled_msg "Setup system" "[===--------] 30%" "Resize deferred"
-		sleep 2
+		# Retry: sometimes e2fsck needs a second pass
+		message="WARNING: resize2fs failed, retrying after e2fsck..." ; broadcast
+		e2fsck -f -y ${EMMC_ROOTFS} 2>/dev/null
+		if resize2fs ${EMMC_ROOTFS} 2>/dev/null; then
+			message="INFO: resize2fs succeeded on retry" ; broadcast
+			RESIZE_OK=true
+		else
+			message="WARNING: resize2fs failed! Will add first-boot fallback." ; broadcast
+			oled_msg "Setup system" "[===--------] 30%" "Resize deferred"
+			sleep 2
+		fi
 	fi
 	# Verify new size
 	NEW_BLOCKS=$(dumpe2fs -h ${EMMC_ROOTFS} 2>/dev/null | grep 'Block count' | awk '{print $3}')

@@ -179,7 +179,7 @@ systemctl stop mosquitto 2>/dev/null || true
 rm -f /var/lib/mosquitto/mosquitto.db /var/lib/mosquitto/*.db
 touch /etc/mosquitto/passwd
 chown root:root /etc/mosquitto/passwd
-chmod 0600 /etc/mosquitto/passwd
+chmod 0644 /etc/mosquitto/passwd
 mosquitto_passwd -b /etc/mosquitto/passwd boneio boneio123
 mosquitto_passwd -b /etc/mosquitto/passwd homeassistant boneio123
 mosquitto_passwd -b /etc/mosquitto/passwd mqtt boneio123

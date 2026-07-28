@@ -113,6 +113,7 @@ else
         libopenjp2-7-dev \
         python3-venv \
         libjpeg-dev \
+        libyaml-dev \
         docker-compose \
         docker.io \
         fonts-dejavu-core \
@@ -298,6 +299,13 @@ mkdir -p ${BONEIO_HOME}/boneio
 python3 -m venv ${BONEIO_HOME}/boneio/venv
 ${BONEIO_HOME}/boneio/venv/bin/pip install --upgrade pip
 ${BONEIO_HOME}/boneio/venv/bin/pip install --upgrade --pre boneio
+
+# Ensure PyYAML has C extension (CLoader). Without libyaml, YAML parsing
+# is ~10x slower. If CLoader is missing, rebuild PyYAML from source.
+if ! ${BONEIO_HOME}/boneio/venv/bin/python -c "from yaml import CLoader" 2>/dev/null; then
+    log_info "   PyYAML missing C extension, rebuilding with libyaml..."
+    ${BONEIO_HOME}/boneio/venv/bin/pip install --force-reinstall --no-binary PyYAML PyYAML
+fi
 
 # Copy example configs (exclude __init__.py and __pycache__ to avoid
 # creating a shadow 'boneio' package in /home/boneio/boneio/ that would

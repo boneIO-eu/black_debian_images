@@ -338,8 +338,8 @@ cd /opt/source
 if [ -d "black-pins-overlay" ]; then
     log_info "   Updating existing overlay repo..."
     cd black-pins-overlay
-    git stash 2>/dev/null || true
-    git pull --ff-only origin main || git pull --ff-only origin master || true
+    git fetch origin 2>/dev/null || true
+    git reset --hard origin/main 2>/dev/null || git reset --hard origin/master 2>/dev/null || true
 else
     log_info "   Cloning overlay repo..."
     git clone https://github.com/boneIO-eu/black-pins-overlay.git

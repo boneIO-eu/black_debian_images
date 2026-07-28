@@ -300,11 +300,19 @@ python3 -m venv ${BONEIO_HOME}/boneio/venv
 ${BONEIO_HOME}/boneio/venv/bin/pip install --upgrade pip
 ${BONEIO_HOME}/boneio/venv/bin/pip install --upgrade --pre boneio
 
-# Ensure PyYAML has C extension (CLoader). Without libyaml, YAML parsing
-# is ~10x slower. If CLoader is missing, rebuild PyYAML from source.
+# Ensure PyYAML has C extension (CLoader). pip install --upgrade may
+# overwrite our bundled armv7l wheel with a PyPI sdist lacking libyaml.
+# Re-install bundled wheel if CLoader is missing.
 if ! ${BONEIO_HOME}/boneio/venv/bin/python -c "from yaml import CLoader" 2>/dev/null; then
-    log_info "   PyYAML missing C extension, rebuilding with libyaml..."
-    ${BONEIO_HOME}/boneio/venv/bin/pip install --force-reinstall --no-binary PyYAML PyYAML
+    PYYAML_WHL=$(find ${BONEIO_HOME}/boneio/venv/lib/python*/site-packages/boneio/migrations/assets/wheels/ \
+        -name 'pyyaml-*-linux_armv7l*.whl' -o -name 'PyYAML-*-linux_armv7l*.whl' 2>/dev/null | head -1)
+    if [ -n "$PYYAML_WHL" ]; then
+        log_info "   PyYAML missing CLoader, installing bundled wheel: $(basename $PYYAML_WHL)"
+        ${BONEIO_HOME}/boneio/venv/bin/pip install --force-reinstall --no-deps --no-index "$PYYAML_WHL"
+    else
+        log_warn "   PyYAML missing CLoader and no bundled wheel found, rebuilding from source..."
+        ${BONEIO_HOME}/boneio/venv/bin/pip install --force-reinstall --no-binary PyYAML PyYAML
+    fi
 fi
 
 # Copy example configs (exclude __init__.py and __pycache__ to avoid

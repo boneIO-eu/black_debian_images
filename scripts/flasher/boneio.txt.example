@@ -1,0 +1,19 @@
+# boneio.txt — BoneIO board configuration
+#
+# Place this file on the SD card boot partition (FAT32) to override
+# automatic board detection during eMMC flashing.
+#
+# The flasher reads this file BEFORE probing I2C. If BOARD_VERSION
+# is set, I2C detection is skipped entirely.
+#
+# Supported values:
+#   BOARD_VERSION=0.8    — BoneIO Black v0.4–v0.8 (GPIO 1-Wire)
+#   BOARD_VERSION=1.0    — BoneIO Black v1.0+     (DS2484 I2C 1-Wire bridge)
+#
+# When flashing WITHOUT an input board connected, set this to the
+# target board version so the correct overlay and config are applied.
+#
+# If this file is absent or BOARD_VERSION is empty, the flasher will
+# auto-detect the board version by probing I2C2 for DS2484 at 0x18.
+
+BOARD_VERSION=0.8

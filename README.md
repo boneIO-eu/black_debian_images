@@ -89,7 +89,12 @@ sudo ./scripts/create_flasher_sd.sh /dev/sdX rootfs.img
    - `/etc/fstab` — poprawne ścieżki urządzeń eMMC
    - `/boot/uEnv.txt` — wyłącza tryb flashera
    - `/etc/default/generic-sys-mods` — ustawia `ROOT_DRIVE`
-5. Przy pierwszym bocie z eMMC: `pishrink` auto-expand rozszerza partycję rootfs
+5. **Auto-detekcja board version** (patrz sekcja `boneio.txt` poniżej):
+   - Czyta `boneio.txt` z partycji boot SD (jeśli istnieje)
+   - Lub probing I2C2 — DS2484 @ 0x18 = board v1.0
+   - Ustawia overlay, moduły 1-Wire, wersję w `config.yaml`
+6. Generuje klucze SSH, czyści flagi
+7. Przy pierwszym bocie z eMMC: `bb-growpart` rozszerza partycję rootfs
 
 ## sysconf.txt (opcjonalnie)
 
@@ -104,3 +109,34 @@ usb_enable_dhcp=yes
 enable_ufw=yes
 ufw_allow_ssh=yes
 ```
+
+## boneio.txt — wersja płytki
+
+Flasher automatycznie wykrywa wersję płytki BoneIO Black przez I2C probe
+(szuka DS2484 na I2C2 @ 0x18). Jeśli chcesz **wymusić** wersję — np. flashujesz
+sam BeagleBone bez podłączonej płytki input — stwórz plik `boneio.txt`
+na partycji boot (FAT32) karty SD:
+
+```bash
+# /boot/firmware/boneio.txt
+BOARD_VERSION=1.0
+```
+
+**Priorytet detekcji:**
+1. `boneio.txt` na partycji boot SD (user override)
+2. I2C probe DS2484 @ 0x18 (auto-detect)
+
+**Obsługiwane wartości:**
+
+| BOARD_VERSION | Overlay | 1-Wire | Config version |
+|---------------|---------|--------|----------------|
+| `0.8` (domyślny) | `BONEIO-BLACK-PINS.dtbo` | GPIO | 0.8 |
+| `1.0` | `BONEIO-BLACK-PINS-v1.0.dtbo` | DS2484 (kernel) | 1.0 |
+
+Gdy flasher wykryje board v1.0 (przez `boneio.txt` lub I2C), automatycznie:
+- Zmienia overlay w `uEnv.txt`
+- Instaluje `/etc/modules-load.d/onewire.conf` (ds2482 + w1-therm)
+- Aktualizuje `version: 0.8` → `version: 1.0` w `config.yaml`
+
+Przykładowy plik: [`scripts/flasher/boneio.txt.example`](scripts/flasher/boneio.txt.example)
+

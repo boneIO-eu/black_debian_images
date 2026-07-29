@@ -575,6 +575,11 @@ finally:
 				sed -i '/^ds2482:/,/^[^ ]/{ /^ds2482:/d; /^  /d; }' "$BONEIO_CONFIG"
 				message="INFO: Removed deprecated ds2482 section from config.yaml" ; broadcast
 			fi
+			# Replace ina219 with ina226 (v1.0 uses INA226 power monitor)
+			if grep -q '^ina219:' "$BONEIO_CONFIG"; then
+				sed -i 's/^ina219:/ina226:/' "$BONEIO_CONFIG"
+				message="INFO: Updated config.yaml ina219 -> ina226 for v1.0 board" ; broadcast
+			fi
 		fi
 	elif [ -n "$UENV_FILE" ]; then
 		message="INFO: Keeping default overlay (BONEIO-BLACK-PINS.dtbo)" ; broadcast

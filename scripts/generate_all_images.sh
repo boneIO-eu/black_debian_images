@@ -112,12 +112,12 @@ fi
 MOUNT_POINT="/mnt/boneio_image"
 mkdir -p "$MOUNT_POINT"
 
-# Device types to generate
-declare -A DEVICE_TYPES=(
-    ["32x10"]="32x10"
-    ["24x16"]="24x16"
-    ["cover"]="cover"
-    ["cover_mix"]="cover_mix"
+# Device types to generate (in order: 32x10 first)
+DEVICE_TYPES=(
+    "32x10"
+    "24x16"
+    "cover"
+    "cover_mix"
 )
 
 # Output directory (same as source image)
@@ -505,13 +505,13 @@ if [ -n "$ONLY_DEVICE" ]; then
 fi
 echo ""
 
-# Process each device type
-for device_name in "${!DEVICE_TYPES[@]}"; do
+# Process each device type in defined order (32x10 first)
+for device_name in "${DEVICE_TYPES[@]}"; do
     # Skip devices not matching --only filter
     if [ -n "$ONLY_DEVICE" ] && [ "$device_name" != "$ONLY_DEVICE" ]; then
         continue
     fi
-    process_device_type "$device_name" "${DEVICE_TYPES[$device_name]}"
+    process_device_type "$device_name" "$device_name"
 done
 
 echo ""

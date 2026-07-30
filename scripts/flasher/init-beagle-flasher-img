@@ -581,6 +581,60 @@ finally:
 				message="INFO: Updated config.yaml ina219 -> ina226 for v1.0 board" ; broadcast
 			fi
 		fi
+
+		# Detect relay board active-LOW (inverted) logic
+		# MCP23017 at address 0x23 (35), register 0x12 (GPIOA)
+		# Reading GPIOA while pins are in INPUT mode (power-on reset default):
+		# If GPIOA reads 0xFF, the relay board has pull-ups -> active-LOW logic (inverted = true)
+		RELAY_INVERTED=false
+		if command -v i2cget >/dev/null 2>&1; then
+			GPIO_A=$(i2cget -y 2 0x23 0x12 2>/dev/null || echo "0x00")
+			if [ "$GPIO_A" = "0xff" ]; then
+				RELAY_INVERTED=true
+				message="INFO: Relay board detected as active-LOW (inverted)" ; broadcast
+			fi
+		elif python3 -c "
+import fcntl, os
+I2C_SLAVE = 0x0703
+try:
+    fd = os.open('/dev/i2c-2', os.O_RDWR)
+    fcntl.ioctl(fd, I2C_SLAVE, 0x23)
+    os.write(fd, b'\x12')
+    data = os.read(fd, 1)
+    if data == b'\xff':
+        print('inverted')
+    os.close(fd)
+except:
+    pass
+" 2>/dev/null | grep -q "inverted"; then
+			RELAY_INVERTED=true
+			message="INFO: Relay board detected as active-LOW (inverted, raw probe)" ; broadcast
+		fi
+
+		if [ "$RELAY_INVERTED" = true ]; then
+			STATE_FILE="/tmp/rootfs/home/boneio/boneiostate.json"
+			mkdir -p /tmp/rootfs/home/boneio
+			python3 -c "
+import json, os
+state_file = '$STATE_FILE'
+state = {}
+if os.path.exists(state_file):
+    try:
+        with open(state_file) as f:
+            state = json.load(f)
+    except:
+        state = {}
+state.setdefault('hardware', {})
+state['hardware']['mcp_0x23_inverted'] = True
+state['hardware']['mcp_0x24_inverted'] = True
+state['hardware']['mcp_35_inverted'] = True
+state['hardware']['mcp_36_inverted'] = True
+with open(state_file, 'w') as f:
+    json.dump(state, f, indent=2)
+"
+			chown 1000:1000 "$STATE_FILE" 2>/dev/null || true
+			message="INFO: Pre-seeded boneiostate.json with inverted relay board flag" ; broadcast
+		fi
 	elif [ -n "$UENV_FILE" ]; then
 		message="INFO: Keeping default overlay (BONEIO-BLACK-PINS.dtbo)" ; broadcast
 	fi

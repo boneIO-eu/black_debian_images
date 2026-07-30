@@ -627,8 +627,7 @@ if os.path.exists(state_file):
 state.setdefault('hardware', {})
 state['hardware']['mcp_0x23_inverted'] = True
 state['hardware']['mcp_0x24_inverted'] = True
-state['hardware']['mcp_35_inverted'] = True
-state['hardware']['mcp_36_inverted'] = True
+state['hardware']['mcp_0x25_inverted'] = True
 with open(state_file, 'w') as f:
     json.dump(state, f, indent=2)
 "

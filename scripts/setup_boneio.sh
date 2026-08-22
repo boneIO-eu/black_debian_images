@@ -195,6 +195,45 @@ else
     systemctl disable --now iwd.service 2>/dev/null || true
     # Boot speed: cockpit (web admin, boneIO has its own UI) ~1.9s
     systemctl disable --now cockpit.socket 2>/dev/null || true
+    # Boot speed: headless box, no console keymap or font to configure ~5.8s
+    systemctl disable --now keyboard-setup.service 2>/dev/null || true
+    systemctl disable --now console-setup.service 2>/dev/null || true
+
+    # Boot speed: AppArmor desktop profiles ~11.4s
+    #
+    # The apparmor package ships ~106 profiles in /etc/apparmor.d, nearly all
+    # for desktop software (brave, chrome, Discord, steam, 1password,
+    # MongoDB_Compass, Xorg, plasmashell, the sbuild-* and lxc-* families...).
+    # apparmor.service loads every one at boot, ahead of networking.service on
+    # the critical path. Measured with apparmor_parser --replace, warm cache:
+    # 2.3s for 111 profiles vs 0.82s for 13.
+    #
+    # Keep-list rather than removal list, so a later apparmor package that adds
+    # more desktop profiles cannot quietly restore the cost.
+    #
+    # Profiles belong to the apparmor package, so nothing is deleted — that
+    # would fight dpkg on every upgrade. Symlinks in /etc/apparmor.d/disable/
+    # are the mechanism apparmor_parser honours natively, and removing them
+    # reverts the change.
+    #
+    # Container confinement is unaffected: dockerd generates its
+    # 'docker-default' profile at runtime, not from /etc/apparmor.d.
+    if [ -d /etc/apparmor.d ]; then
+        APPARMOR_KEEP="unix-chkpwd usr.sbin.dhclient systemd-coredump runc crun
+                       rootlesskit slirp4netns unprivileged_userns userbindmount
+                       busybox toybox lsb_release nvidia_modprobe"
+        mkdir -p /etc/apparmor.d/disable
+        aa_disabled=0
+        for prof in /etc/apparmor.d/*; do
+            [ -f "$prof" ] || continue
+            pname=$(basename "$prof")
+            case " $(echo $APPARMOR_KEEP) " in
+                *" $pname "*) continue ;;
+            esac
+            ln -sf "$prof" "/etc/apparmor.d/disable/$pname" && aa_disabled=$((aa_disabled+1))
+        done
+        log_info "   AppArmor: disabled ${aa_disabled} desktop profile(s)"
+    fi
 
     systemctl daemon-reload
     step_mark "step4_services"

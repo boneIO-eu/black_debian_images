@@ -454,13 +454,50 @@ fi
 # Ensure enable_uboot_overlays=1 is uncommented
 sed -i 's/^#enable_uboot_overlays=1/enable_uboot_overlays=1/' "$UENV"
 
-# Add overlay if not already present (use versioned name, not legacy alias)
-if grep -q 'uboot_overlay_addr0=BONEIO-BLACK-PINS.dtbo' "$UENV"; then
-    # Migrate legacy alias → explicit versioned overlay
-    sed -i 's|uboot_overlay_addr0=BONEIO-BLACK-PINS.dtbo|uboot_overlay_addr0=BONEIO-BLACK-PINS-v0.4-v0.8.dtbo|' "$UENV"
-    log_info "   Migrated overlay: BONEIO-BLACK-PINS.dtbo → BONEIO-BLACK-PINS-v0.4-v0.8.dtbo"
-elif ! grep -q 'uboot_overlay_addr0=BONEIO-BLACK-PINS' "$UENV"; then
-    sed -i '/^enable_uboot_overlays=1/a uboot_overlay_addr0=BONEIO-BLACK-PINS-v0.4-v0.8.dtbo' "$UENV"
+# The normalization below anchors its insert on this line, so it must exist.
+# Without this guard a uEnv.txt lacking the line entirely would have its overlay
+# declaration deleted and nothing inserted in its place.
+if ! grep -q '^enable_uboot_overlays=1' "$UENV"; then
+    echo 'enable_uboot_overlays=1' >> "$UENV"
+    log_warn "   enable_uboot_overlays=1 was missing, appended"
+fi
+
+# Normalize the overlay declaration to EXACTLY ONE line.
+#
+# A controller was found in the field with two active declarations:
+#     uboot_overlay_addr0=BONEIO-BLACK-PINS.dtbo
+#     uboot_overlay_addr0=BONEIO-BLACK-PINS-v1.0.dtbo
+# uEnv.txt is consumed by U-Boot's "env import", so the last line silently wins
+# and the first is dead weight that confuses every later sed-based migration.
+# Rather than patch individual cases, drop every BONEIO declaration (active or
+# commented) and re-insert a single authoritative one.
+#
+# The overlay is referenced by BARE FILENAME on purpose: U-Boot resolves it
+# against /boot/dtbs/$uname_r/, so it keeps working after a kernel upgrade.
+# A hardcoded path does not.
+BONEIO_OVERLAY="${BONEIO_OVERLAY:-BONEIO-BLACK-PINS-v0.4-v0.8.dtbo}"
+
+OVERLAY_LINES_BEFORE=$(grep -c '^[#[:space:]]*uboot_overlay_addr0=.*BONEIO-BLACK-PINS' "$UENV" || true)
+sed -i '/^[#[:space:]]*uboot_overlay_addr0=.*BONEIO-BLACK-PINS/d' "$UENV"
+sed -i "/^enable_uboot_overlays=1/a uboot_overlay_addr0=${BONEIO_OVERLAY}" "$UENV"
+
+if [ "$OVERLAY_LINES_BEFORE" -gt 1 ]; then
+    log_warn "   Collapsed ${OVERLAY_LINES_BEFORE} duplicate overlay declarations into one"
+fi
+log_info "   Overlay set to ${BONEIO_OVERLAY}"
+
+# Fix the malformed 'earlycon' kernel argument.
+#
+# The BeagleBoard base image ships a bare "earlycon" in cmdline. On this DT
+# platform the kernel cannot resolve it and rejects the option outright:
+#     [    0.000000] Malformed early option 'earlycon'
+# The result is no boot console at all until the 8250 driver registers at
+# ~3.9 s, so any hang or panic before that point is completely invisible —
+# while the cmdline suggests early console is available. Give it the explicit
+# UART0 MMIO address for AM335x.
+if grep -q '^cmdline=.*[[:space:]]earlycon\([[:space:]]\|$\)' "$UENV"; then
+    sed -i 's/^\(cmdline=.*\)[[:space:]]earlycon\([[:space:]]\|$\)/\1 earlycon=8250,mmio32,0x44e09000\2/' "$UENV"
+    log_info "   Fixed malformed 'earlycon' -> earlycon=8250,mmio32,0x44e09000"
 fi
 
 # Uncomment disable lines (idempotent — works if already uncommented)

@@ -49,6 +49,18 @@ last_ts() {
         | sed -n 's/^\[ *\([0-9]*\.[0-9]*\)\].*/\1/p'
 }
 
+# Monotonic timestamp from systemd's own bookkeeping, in seconds.
+# Preferred over journal scraping: it does not depend on log message wording,
+# and it survives journald being behind under load.
+unit_ts() {
+    local unit="$1" prop="$2" v
+    v=$(systemctl show "$unit" -p "$prop" --value 2>/dev/null)
+    # 0 means "never happened"; treat as unavailable.
+    if [ -n "$v" ] && [ "$v" != "0" ]; then
+        awk -v u="$v" 'BEGIN{printf "%.6f", u/1000000}'
+    fi
+}
+
 fmt() {
     # "12.345" -> "12.35s", empty -> "n/a"
     [ -n "${1:-}" ] && printf '%.2fs' "$1" || printf 'n/a'
@@ -66,12 +78,14 @@ delta() {
 KERNEL_TIME=$(systemd-analyze time 2>/dev/null | sed -n 's/.*Startup finished in \([0-9.]*\)s (kernel).*/\1/p')
 USERSPACE_TIME=$(systemd-analyze time 2>/dev/null | sed -n 's/.*+ \(.*\) (userspace).*/\1/p')
 
-BONEIO_STARTING=$(first_ts boneio.service "Starting boneio.service")
-BONEIO_STARTED=$(first_ts boneio.service "Started boneio.service")
+BONEIO_EXEC=$(unit_ts boneio.service ExecMainStartTimestampMonotonic)
+BONEIO_ACTIVE=$(unit_ts boneio.service ActiveEnterTimestampMonotonic)
+BONEIO_JOB=$(unit_ts boneio.service InactiveExitTimestampMonotonic)
 BONEIO_APP=$(first_ts boneio.service "BoneIO .* starting")
 # Readiness: the app has bound every GPIO chip it was configured for.
 IO_READY=$(last_ts boneio.service "Successfully configured chip")
 WEB_UP=$(first_ts boneio.service "Starting HYPERCORN")
+RESTARTS=$(systemctl show boneio.service -p NRestarts --value 2>/dev/null)
 
 # Overlay state — this silently broke once and cost real debugging time.
 OVERLAY_APPLIED="NO"
@@ -94,12 +108,14 @@ render() {
     printf '%-38s %10s\n' "kernel (incl. initramfs)" "$(fmt "$KERNEL_TIME")"
     printf '%-38s %10s\n' "userspace (to default.target)" "${USERSPACE_TIME:-n/a}"
     echo
-    printf '%-38s %10s\n' "boneio.service: Starting" "$(fmt "$BONEIO_STARTING")"
-    printf '%-38s %10s\n' "boneio.service: Started" "$(fmt "$BONEIO_STARTED")"
-    printf '%-38s %10s\n' "  -> ExecStartPre cost" "$(fmt "$(delta "$BONEIO_STARTING" "$BONEIO_STARTED")")"
+    printf '%-38s %10s\n' "boneio.service: job started" "$(fmt "$BONEIO_JOB")"
+    printf '%-38s %10s\n' "boneio.service: exec" "$(fmt "$BONEIO_EXEC")"
+    printf '%-38s %10s\n' "boneio.service: active" "$(fmt "$BONEIO_ACTIVE")"
+    printf '%-38s %10s\n' "  -> pre-exec cost" "$(fmt "$(delta "$BONEIO_JOB" "$BONEIO_EXEC")")"
     printf '%-38s %10s\n' "app logged 'starting'" "$(fmt "$BONEIO_APP")"
-    printf '%-38s %10s\n' "  -> python + imports + config" "$(fmt "$(delta "$BONEIO_STARTED" "$BONEIO_APP")")"
+    printf '%-38s %10s\n' "  -> python + imports + config" "$(fmt "$(delta "$BONEIO_ACTIVE" "$BONEIO_APP")")"
     printf '%-38s %10s\n' "web server starting" "$(fmt "$WEB_UP")"
+    printf '%-38s %10s\n' "restarts this boot" "${RESTARTS:-?}"
     echo
     printf '%-38s %10s\n' ">>> I/O READY (all gpiochips bound)" "$(fmt "$IO_READY")"
     echo
@@ -112,6 +128,8 @@ render() {
     echo
     echo "critical chain to boneio.service:"
     systemd-analyze critical-chain boneio.service 2>/dev/null | tail -n +4 | head -8 | sed 's/^/  /'
+    echo "  (the @ value on the first line is derived from the dependency chain,"
+    echo "   not when the unit actually started — use 'boneio.service: active' above)"
 }
 
 REPORT="$(render)"

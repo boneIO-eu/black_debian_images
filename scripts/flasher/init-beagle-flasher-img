@@ -501,15 +501,25 @@ fix_emmc_rootfs () {
 		modprobe i2c-dev 2>/dev/null || true
 		sleep 1
 
+		# Diagnostic: list available I2C buses
+		I2C_BUSES=$(ls /dev/i2c-* 2>/dev/null || echo "none")
+		message="DIAG: Available I2C buses: ${I2C_BUSES}" ; broadcast
+
 		if command -v i2cdetect >/dev/null 2>&1; then
+			message="DIAG: i2cdetect found at $(command -v i2cdetect)" ; broadcast
+			# Dump full i2cdetect output for debugging
+			I2C_SCAN=$(i2cdetect -y -r 2 0x18 0x18 2>&1 || echo "FAILED")
+			message="DIAG: i2cdetect output: ${I2C_SCAN}" ; broadcast
+
 			# Probe address 0x18 on I2C bus 2 (quick mode, single address)
-			if i2cdetect -y -r 2 0x18 0x18 2>/dev/null | grep -q "18"; then
+			if echo "$I2C_SCAN" | grep -q "18"; then
 				BOARD_HAS_DS2484=true
 				message="INFO: DS2484 detected at 0x18 on I2C2 -> board v1.0+" ; broadcast
 			else
 				message="INFO: No DS2484 at 0x18 -> board v0.4-v0.8 (GPIO 1-Wire)" ; broadcast
 			fi
 		elif [ -e /dev/i2c-2 ]; then
+			message="DIAG: No i2cdetect, trying raw Python probe on /dev/i2c-2" ; broadcast
 			# Fallback: raw I2C probe without i2cdetect
 			# Try reading from address 0x18 - if device is present, read succeeds
 			if python3 -c "
@@ -564,7 +574,7 @@ finally:
 		fi
 
 		# Update board version in config.yaml (0.8 -> 1.0)
-		BONEIO_CONFIG="/tmp/rootfs/home/boneio/boneio/config/config.yaml"
+		BONEIO_CONFIG="/tmp/rootfs/home/boneio/boneio/config.yaml"
 		if [ -f "$BONEIO_CONFIG" ]; then
 			if grep -q 'version:.*0\.8' "$BONEIO_CONFIG"; then
 				sed -i 's/\(version:\s*\)0\.8/\11.0/' "$BONEIO_CONFIG"

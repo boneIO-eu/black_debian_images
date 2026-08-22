@@ -454,9 +454,13 @@ fi
 # Ensure enable_uboot_overlays=1 is uncommented
 sed -i 's/^#enable_uboot_overlays=1/enable_uboot_overlays=1/' "$UENV"
 
-# Add overlay if not already present
-if ! grep -q 'uboot_overlay_addr0=BONEIO-BLACK-PINS.dtbo' "$UENV"; then
-    sed -i '/^enable_uboot_overlays=1/a uboot_overlay_addr0=BONEIO-BLACK-PINS.dtbo' "$UENV"
+# Add overlay if not already present (use versioned name, not legacy alias)
+if grep -q 'uboot_overlay_addr0=BONEIO-BLACK-PINS.dtbo' "$UENV"; then
+    # Migrate legacy alias → explicit versioned overlay
+    sed -i 's|uboot_overlay_addr0=BONEIO-BLACK-PINS.dtbo|uboot_overlay_addr0=BONEIO-BLACK-PINS-v0.4-v0.8.dtbo|' "$UENV"
+    log_info "   Migrated overlay: BONEIO-BLACK-PINS.dtbo → BONEIO-BLACK-PINS-v0.4-v0.8.dtbo"
+elif ! grep -q 'uboot_overlay_addr0=BONEIO-BLACK-PINS' "$UENV"; then
+    sed -i '/^enable_uboot_overlays=1/a uboot_overlay_addr0=BONEIO-BLACK-PINS-v0.4-v0.8.dtbo' "$UENV"
 fi
 
 # Uncomment disable lines (idempotent — works if already uncommented)

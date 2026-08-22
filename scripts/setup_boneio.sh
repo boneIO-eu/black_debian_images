@@ -465,26 +465,52 @@ fi
 # Normalize the overlay declaration to EXACTLY ONE line.
 #
 # A controller was found in the field with two active declarations:
-#     uboot_overlay_addr0=BONEIO-BLACK-PINS.dtbo
-#     uboot_overlay_addr0=BONEIO-BLACK-PINS-v1.0.dtbo
-# uEnv.txt is consumed by U-Boot's "env import", so the last line silently wins
-# and the first is dead weight that confuses every later sed-based migration.
-# Rather than patch individual cases, drop every BONEIO declaration (active or
-# commented) and re-insert a single authoritative one.
+#     uboot_overlay_addr0=BONEIO-BLACK-PINS.dtbo          <- legacy alias (v0.4-v0.8)
+#     uboot_overlay_addr0=BONEIO-BLACK-PINS-v1.0.dtbo     <- correct for that board
+# uEnv.txt is consumed by U-Boot's "env import", so the LAST line wins. The
+# duplicate is not harmless bookkeeping: the two lines select different pinmux.
+# On a v1.0+ board the legacy alias would put GPIO 1-Wire on P9_12 instead of
+# the buzzer and leave DS2484 undeclared; on a v0.4-v0.8 board the reverse.
+#
+# Therefore NEVER guess the board version here. Preserve whatever U-Boot is
+# already using — the last active declaration — and only fall back to a default
+# when the file declares nothing at all. Getting this wrong silently degrades a
+# working controller, and the symptom (1-Wire missing, wrong pin behaviour) does
+# not point back at uEnv.txt.
+#
+# Override for a fresh image with no declaration yet:
+#     BONEIO_OVERLAY=BONEIO-BLACK-PINS-v1.0.dtbo ./setup_boneio.sh
 #
 # The overlay is referenced by BARE FILENAME on purpose: U-Boot resolves it
 # against /boot/dtbs/$uname_r/, so it keeps working after a kernel upgrade.
 # A hardcoded path does not.
-BONEIO_OVERLAY="${BONEIO_OVERLAY:-BONEIO-BLACK-PINS-v0.4-v0.8.dtbo}"
 
 OVERLAY_LINES_BEFORE=$(grep -c '^[#[:space:]]*uboot_overlay_addr0=.*BONEIO-BLACK-PINS' "$UENV" || true)
+
+# Last ACTIVE declaration = what U-Boot uses today. Strip any path prefix.
+CURRENT_OVERLAY=$(sed -n 's|^uboot_overlay_addr0=.*/\?\(BONEIO-BLACK-PINS[^[:space:]#]*\.dtbo\).*|\1|p' "$UENV" | tail -1)
+
+if [ -n "$CURRENT_OVERLAY" ]; then
+    if [ "$CURRENT_OVERLAY" = "BONEIO-BLACK-PINS.dtbo" ]; then
+        # Legacy alias is documented as identical to v0.4-v0.8. Make it explicit
+        # so future version comparisons are unambiguous.
+        BONEIO_OVERLAY="BONEIO-BLACK-PINS-v0.4-v0.8.dtbo"
+        log_info "   Overlay: legacy alias -> ${BONEIO_OVERLAY}"
+    else
+        BONEIO_OVERLAY="$CURRENT_OVERLAY"
+        log_info "   Overlay: preserving existing ${BONEIO_OVERLAY}"
+    fi
+else
+    BONEIO_OVERLAY="${BONEIO_OVERLAY:-BONEIO-BLACK-PINS-v0.4-v0.8.dtbo}"
+    log_info "   Overlay: none declared, defaulting to ${BONEIO_OVERLAY}"
+fi
+
 sed -i '/^[#[:space:]]*uboot_overlay_addr0=.*BONEIO-BLACK-PINS/d' "$UENV"
 sed -i "/^enable_uboot_overlays=1/a uboot_overlay_addr0=${BONEIO_OVERLAY}" "$UENV"
 
 if [ "$OVERLAY_LINES_BEFORE" -gt 1 ]; then
     log_warn "   Collapsed ${OVERLAY_LINES_BEFORE} duplicate overlay declarations into one"
 fi
-log_info "   Overlay set to ${BONEIO_OVERLAY}"
 
 # Fix the malformed 'earlycon' kernel argument.
 #

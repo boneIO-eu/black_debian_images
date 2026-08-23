@@ -636,6 +636,24 @@ apt-get autoremove -y
 apt-get clean
 journalctl --vacuum-time=0d
 truncate -s 0 /etc/machine-id
+
+# Remove journal directories now that machine-id is cleared.
+#
+# /var/log/journal/ and log2ram's disk copy hold one subdirectory per
+# machine-id. journald manages only the one matching /etc/machine-id, so once a
+# new id is generated on first boot the old directory becomes invisible to
+# journalctl --vacuum-* and to SystemMaxUse, and is never cleaned again.
+#
+# That is not just wasted space: log2ram rsyncs the whole tree on every boot,
+# with --no-whole-file, so it checksums the apparent size of every sparse
+# journal file. A field controller had accumulated nine machine-id directories
+# and log2ram was spending 18.3 s per boot on them.
+#
+# 'journalctl --vacuum-time=0d' above does not touch these — it only knows the
+# current machine-id, which we are about to invalidate. So clear them here,
+# while we still know the image is being sealed.
+rm -rf /var/log/journal/* /var/hdd.log/journal/* 2>/dev/null || true
+
 rm -f /var/lib/dbus/machine-id
 ln -sf /etc/machine-id /var/lib/dbus/machine-id
 rm -rf /var/lib/dhcp/*

@@ -247,7 +247,22 @@ else
     #
     # Revert with: loginctl disable-linger boneio
     loginctl enable-linger ${BONEIO_USER} 2>/dev/null || true
-    log_info "   Lingering enabled for ${BONEIO_USER} (faster SSH login)"
+
+    # ...but start that manager last, so it does not take CPU from boneIO
+    # during boot. Note After=boneio.service would NOT work: boneio.service is
+    # Type=simple, so systemd marks it active the moment it execs while its
+    # Python imports run for ~20s more. multi-user.target is reached only once
+    # everything else has started.
+    mkdir -p /etc/systemd/system/user@1000.service.d
+    cat > /etc/systemd/system/user@1000.service.d/50-boneio-defer.conf << 'EOF'
+[Unit]
+After=multi-user.target
+
+[Service]
+CPUWeight=20
+IOWeight=20
+EOF
+    log_info "   Lingering enabled for ${BONEIO_USER}, manager deferred past boot"
 
     systemctl daemon-reload
     step_mark "step4_services"

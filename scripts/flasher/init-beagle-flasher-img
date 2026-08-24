@@ -461,7 +461,18 @@ fix_emmc_rootfs () {
 	BOARD_HAS_DS2484=false
 
 	# 1. Check for boneio.txt override on SD boot partition
+	#    When running as init (PID 1), /boot/firmware is NOT mounted yet.
+	#    Mount the SD card's FAT32 boot partition temporarily.
 	BONEIO_TXT=""
+	BOOT_MOUNTED=false
+	if ! mountpoint -q /boot/firmware 2>/dev/null; then
+		mkdir -p /boot/firmware
+		if mount /dev/mmcblk0p1 /boot/firmware -o ro 2>/dev/null; then
+			BOOT_MOUNTED=true
+			message="INFO: Mounted SD boot partition at /boot/firmware" ; broadcast
+		fi
+	fi
+
 	for candidate in /boot/firmware/boneio.txt /boot/boneio.txt; do
 		if [ -f "$candidate" ]; then
 			BONEIO_TXT="$candidate"
@@ -491,6 +502,11 @@ fix_emmc_rootfs () {
 		else
 			message="INFO: boneio.txt found but BOARD_VERSION not set, falling back to I2C probe" ; broadcast
 		fi
+	fi
+
+	# Unmount boot partition if we mounted it
+	if $BOOT_MOUNTED; then
+		umount /boot/firmware 2>/dev/null || true
 	fi
 
 	# 2. Fall back to I2C auto-detection if no valid boneio.txt

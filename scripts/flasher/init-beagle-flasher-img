@@ -777,7 +777,10 @@ station_boot_or_shutdown () {
 
 		oled_msg "Station mode" "Flash: ${mins}m ${secs}s" "Preparing test..."
 
-		# 1. Override SD card boneIO config with 32x10A for uniform relay testing.
+		# 1. Remount SD card rootfs as read-write so we can apply test config
+		mount -o remount,rw / 2>/dev/null || true
+
+		# 2. Override SD card boneIO config with 32x10A for uniform relay testing.
 		#    This way all 32 physical relay outputs are individually addressable,
 		#    regardless of the eMMC image type (cover, covermix, 32x10A, etc.).
 		#    eMMC keeps its original production config untouched.
@@ -789,15 +792,40 @@ station_boot_or_shutdown () {
 
 		if [ -n "$VENV_EXAMPLE" ]; then
 			message="INFO: Applying 32x10A test config from ${VENV_EXAMPLE}..." ; broadcast
-			rm -f "${BONEIO_HOME}"/*.yaml
-			cp "${VENV_EXAMPLE}"/*.yaml "${BONEIO_HOME}/"
+			rm -f "${BONEIO_HOME}"/*.yaml 2>/dev/null || true
+			cp "${VENV_EXAMPLE}"/*.yaml "${BONEIO_HOME}/" 2>/dev/null || true
+
+			# Apply board v1.0 adjustments if v1.0 detected
+			if [ "$BOARD_HAS_DS2484" = true ]; then
+				if [ -f "${BONEIO_HOME}/config.yaml" ]; then
+					sed -i 's/\(version:\s*\)0\.8/\11.0/' "${BONEIO_HOME}/config.yaml" 2>/dev/null || true
+					sed -i 's/^ina219:/ina226:/' "${BONEIO_HOME}/config.yaml" 2>/dev/null || true
+				fi
+				if [ "$RELAY_INVERTED" = true ]; then
+					python3 -c "
+import json, os
+state_file = '/home/boneio/boneiostate.json'
+state = {}
+if os.path.exists(state_file):
+    try:
+        with open(state_file) as f: state = json.load(f)
+    except: state = {}
+state.setdefault('hardware', {})
+state['hardware']['mcp_0x23_inverted'] = True
+state['hardware']['mcp_0x24_inverted'] = True
+state['hardware']['mcp_0x25_inverted'] = True
+with open(state_file, 'w') as f: json.dump(state, f, indent=2)
+" 2>/dev/null || true
+					chown 1000:1000 /home/boneio/boneiostate.json 2>/dev/null || true
+				fi
+			fi
 
 			# Set INA update_interval to 1s for fast current readings during relay test
 			if [ -f "${BONEIO_HOME}/config.yaml" ]; then
-				sed -i '/address: 0x40/a\    update_interval: 1s' "${BONEIO_HOME}/config.yaml"
+				sed -i '/address: 0x40/a\    update_interval: 1s' "${BONEIO_HOME}/config.yaml" 2>/dev/null || true
 			fi
 
-			chown -R 1000:1000 "${BONEIO_HOME}"/*.yaml 2>/dev/null || true
+			chown -R 1000:1000 "${BONEIO_HOME}" 2>/dev/null || true
 			message="INFO: Test config applied (32x10A, INA update_interval: 1s)" ; broadcast
 		else
 			message="WARNING: example_config/32x10 not found — using existing SD config" ; broadcast

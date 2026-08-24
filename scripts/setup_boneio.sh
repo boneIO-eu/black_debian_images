@@ -94,6 +94,40 @@ else
     export DEBIAN_FRONTEND=noninteractive
     export NEEDRESTART_MODE=a
 
+    # Expand rootfs to fill the entire SD card — the image from
+    # create_rootfs_img.sh is shrunk to ~2.7 GB, but the physical SD card
+    # can be 8–32 GB. Without this, dist-upgrade fails with ENOSPC.
+    ROOT_DEV=$(findmnt -n -o SOURCE /)
+    if [ -n "$ROOT_DEV" ]; then
+        # Extract disk device and partition number (e.g. /dev/mmcblk0p3 → /dev/mmcblk0, 3)
+        DISK_DEV=$(echo "$ROOT_DEV" | sed 's/p[0-9]*$//')
+        PART_NUM=$(echo "$ROOT_DEV" | grep -o '[0-9]*$')
+
+        if [ -b "$DISK_DEV" ] && [ -n "$PART_NUM" ]; then
+            CURRENT_SIZE=$(df --output=size / | tail -1 | tr -d ' ')
+            # Only expand if rootfs < 4 GB (4194304 KB) — avoids re-running on eMMC
+            if [ "$CURRENT_SIZE" -lt 4194304 ] 2>/dev/null; then
+                log_info "   Expanding rootfs partition ($ROOT_DEV) to fill SD card..."
+                if command -v growpart &>/dev/null; then
+                    growpart "$DISK_DEV" "$PART_NUM" || true
+                else
+                    log_warn "   growpart not found, trying sfdisk..."
+                    echo ", +" | sfdisk -N "$PART_NUM" "$DISK_DEV" --force --no-reread 2>/dev/null || true
+                    partprobe "$DISK_DEV" 2>/dev/null || true
+                fi
+                resize2fs "$ROOT_DEV" || true
+                log_info "   Rootfs expanded: $(df -h / | awk 'NR==2{print $2}')"
+            fi
+        fi
+    fi
+
+    # Free disk space BEFORE upgrade — belt and suspenders
+    log_info "   Freeing disk space before upgrade..."
+    apt-get clean
+    docker system prune -af 2>/dev/null || true
+    rm -rf /tmp/* /var/tmp/* 2>/dev/null || true
+    journalctl --vacuum-size=1M 2>/dev/null || true
+
     apt-get update
     apt-get -y dist-upgrade
 

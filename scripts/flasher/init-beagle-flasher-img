@@ -857,19 +857,16 @@ cleanup_and_shutdown () {
 
 	sync
 
+	# Use halt instead of sysrq power-off.
+	# sysrq 'o' (power off) shuts down GPIO modules, causing active-LOW buzzer
+	# to sound. halt -f stops the CPU but keeps GPIO clocked and pins driven,
+	# so the buzzer stays silent. User must physically remove power anyway.
 	if [ -f /proc/sysrq-trigger ] ; then
-		message="INFO: Syncing and powering off via sysrq..." ; broadcast
+		message="INFO: Syncing and halting..." ; broadcast
 		echo s > /proc/sysrq-trigger
 		sleep 1
-		echo o > /proc/sysrq-trigger
 	fi
 
-	# Fallback if sysrq did not work
-	sleep 5
-
-	# When running as init, try to hand off to real init
-	exec /sbin/init
-	# Should not reach here
 	halt -f
 }
 

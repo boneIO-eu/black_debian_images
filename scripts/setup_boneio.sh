@@ -783,11 +783,12 @@ echo "==========================================================================
 echo "  SETUP COMPLETE!"
 echo "================================================================================"
 echo ""
-echo "System will shutdown in 5 seconds."
-echo "After shutdown:"
-echo "  1. Remove SD card from BBB"
+echo "System will halt in 5 seconds."
+echo "After halt (all LEDs freeze/stop):"
+echo "  1. Disconnect power / remove SD card from BBB"
 echo "  2. On PC: sudo ./create_rootfs_img.sh /dev/sdX rootfs.img"
 echo ""
 
 sleep 5
-poweroff
+sync
+halt -f

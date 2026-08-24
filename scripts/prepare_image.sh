@@ -104,4 +104,5 @@ sleep 3
 history -c
 rm -f /root/.bash_history
 rm -f /home/*/.bash_history
-poweroff
+sync
+halt -f

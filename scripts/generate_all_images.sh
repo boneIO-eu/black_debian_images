@@ -399,7 +399,7 @@ create_emmc_flasher() {
     if [ -f "$uenv_file" ]; then
         echo "" >> "$uenv_file"
         echo "# DD-based eMMC flasher (active only on SD card)" >> "$uenv_file"
-        echo "cmdline=init=/usr/sbin/init-beagle-flasher-img" >> "$uenv_file"
+        echo "cmdline=init=/usr/sbin/init-beagle-flasher-img net.ifnames=0" >> "$uenv_file"
         print_info "Enabled cmdline flasher in flasher uEnv.txt"
     fi
     

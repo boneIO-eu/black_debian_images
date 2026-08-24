@@ -221,7 +221,7 @@ fi
 if [ -f "$UENV_FILE" ]; then
     echo "" >> "$UENV_FILE"
     echo "# DD-based eMMC flasher (active only on SD card)" >> "$UENV_FILE"
-    echo "cmdline=init=/usr/sbin/init-beagle-flasher-img" >> "$UENV_FILE"
+    echo "cmdline=init=/usr/sbin/init-beagle-flasher-img net.ifnames=0" >> "$UENV_FILE"
     echo "Enabled cmdline flasher in SD card uEnv.txt"
 else
     echo "WARNING: uEnv.txt not found at $UENV_FILE"

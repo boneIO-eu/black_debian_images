@@ -749,6 +749,68 @@ RCEOF
 	message="--------------------------------------------------------------------------------" ; broadcast
 }
 
+station_boot_or_shutdown () {
+	if [ "${BONEIO_FLASHER_STATION}" = "1" ]; then
+		message="INFO: ===============================================" ; broadcast
+		message="INFO: STATION MODE — booting test system from SD card" ; broadcast
+		message="INFO: ===============================================" ; broadcast
+
+		local elapsed=$(( $(date +%s) - ${FLASH_START_TIME:-0} ))
+		local mins=$(( elapsed / 60 ))
+		local secs=$(( elapsed % 60 ))
+
+		oled_msg "Station mode" "Flash: ${mins}m ${secs}s" "Preparing test..."
+
+		# 1. Override SD card boneIO config with 32x10A for uniform relay testing.
+		#    This way all 32 physical relay outputs are individually addressable,
+		#    regardless of the eMMC image type (cover, covermix, 32x10A, etc.).
+		#    eMMC keeps its original production config untouched.
+		local BONEIO_HOME="/home/boneio/boneio"
+		local VENV_EXAMPLE=""
+		for sp in "${BONEIO_HOME}/venv/lib/python"*/site-packages/boneio/example_config/32x10; do
+			[ -d "$sp" ] && VENV_EXAMPLE="$sp" && break
+		done
+
+		if [ -n "$VENV_EXAMPLE" ]; then
+			message="INFO: Applying 32x10A test config from ${VENV_EXAMPLE}..." ; broadcast
+			rm -f "${BONEIO_HOME}"/*.yaml
+			cp "${VENV_EXAMPLE}"/*.yaml "${BONEIO_HOME}/"
+
+			# Set INA update_interval to 1s for fast current readings during relay test
+			if [ -f "${BONEIO_HOME}/config.yaml" ]; then
+				sed -i '/address: 0x40/a\    update_interval: 1s' "${BONEIO_HOME}/config.yaml"
+			fi
+
+			chown -R 1000:1000 "${BONEIO_HOME}"/*.yaml 2>/dev/null || true
+			message="INFO: Test config applied (32x10A, INA update_interval: 1s)" ; broadcast
+		else
+			message="WARNING: example_config/32x10 not found — using existing SD config" ; broadcast
+		fi
+
+		# 2. Stop background processes
+		oled_stop_daemon
+		if [ -n "$CYLON_PID" ]; then
+			kill $CYLON_PID > /dev/null 2>&1 || true
+		fi
+
+		all_leds_on
+
+		oled_msg "Station mode" "Booting SD..." "Test system"
+		message="INFO: Handing over to systemd on SD card..." ; broadcast
+		sync
+
+		# 3. Boot systemd from SD card — boneio.service will start with 32x10A test config.
+		#    exec replaces PID 1, systemd takes over normally.
+		exec /sbin/init
+
+		# Should not reach here
+		echo "ERROR: exec /sbin/init failed!" >&2
+		halt -f
+	else
+		cleanup_and_shutdown
+	fi
+}
+
 cleanup_and_shutdown () {
 	message="INFO: Cleanup..." ; broadcast
 	sync
@@ -803,4 +865,4 @@ find_image_file
 FLASH_START_TIME=$(date +%s)
 flash_emmc
 fix_emmc_rootfs
-cleanup_and_shutdown
+station_boot_or_shutdown

@@ -85,12 +85,55 @@ fi
 echo ""
 
 # =============================================================================
+# STEP 0: System upgrade + kernel cleanup
+# =============================================================================
+if step_done "step0_dist_upgrade"; then
+    log_skip "0/12: System upgrade (already done)"
+else
+    log_info "0/12: System upgrade (apt dist-upgrade)..."
+    export DEBIAN_FRONTEND=noninteractive
+    export NEEDRESTART_MODE=a
+
+    apt-get update
+    apt-get -y dist-upgrade
+
+    apt-get -y autoremove --purge
+    apt-get clean
+
+    step_mark "step0_dist_upgrade"
+
+    # Check if kernel was upgraded — requires reboot before continuing
+    CURRENT_KERNEL=$(uname -r)
+    NEWEST_KERNEL=$(ls -t /boot/vmlinuz-* 2>/dev/null | head -1 | sed 's|/boot/vmlinuz-||')
+    if [ -n "$NEWEST_KERNEL" ] && [ "$NEWEST_KERNEL" != "$CURRENT_KERNEL" ]; then
+        log_warn "============================================================"
+        log_warn "Kernel upgraded: $CURRENT_KERNEL -> $NEWEST_KERNEL"
+        log_warn "Reboot required! After reboot, re-run this script:"
+        log_warn "  curl -H 'Cache-Control: no-cache' -fsSL \\"
+        log_warn "    https://raw.githubusercontent.com/boneIO-eu/black_debian_images/main/scripts/setup_boneio.sh | sudo bash"
+        log_warn "============================================================"
+        exit 0
+    fi
+fi
+
+# Remove old kernels (safe: uname -r = currently booted kernel after reboot)
+CURRENT_KERNEL=$(uname -r)
+OLD_KERNELS=$(dpkg -l 'linux-image-*' 2>/dev/null | awk '/^ii/{print $2}' \
+    | grep -v "$CURRENT_KERNEL" | grep -v 'linux-image-generic' || true)
+if [ -n "$OLD_KERNELS" ]; then
+    log_info "Removing old kernels: $OLD_KERNELS"
+    apt-get -y purge $OLD_KERNELS
+    apt-get -y autoremove --purge
+    apt-get clean
+fi
+
+# =============================================================================
 # STEP 1: UFW Firewall
 # =============================================================================
 if step_done "step1_ufw"; then
-    log_skip "1/11: UFW firewall (already configured)"
+    log_skip "1/12: UFW firewall (already configured)"
 else
-    log_info "1/11: Configuring UFW firewall..."
+    log_info "1/12: Configuring UFW firewall..."
     ufw allow 1883  # MQTT
     ufw allow 8090  # BoneIO Web
     ufw allow 8091  # Nginx proxy
@@ -103,9 +146,9 @@ fi
 # STEP 2: APT Install
 # =============================================================================
 if step_done "step2_apt_install"; then
-    log_skip "2/11: APT packages (already installed)"
+    log_skip "2/12: APT packages (already installed)"
 else
-    log_info "2/11: Installing required packages..."
+    log_info "2/12: Installing required packages..."
     export DEBIAN_FRONTEND=noninteractive
     export NEEDRESTART_MODE=a
     apt update
@@ -137,9 +180,9 @@ fi
 # STEP 3: APT Remove unnecessary packages
 # =============================================================================
 if step_done "step3_apt_remove"; then
-    log_skip "3/11: APT remove (already cleaned)"
+    log_skip "3/12: APT remove (already cleaned)"
 else
-    log_info "3/11: Removing unnecessary packages..."
+    log_info "3/12: Removing unnecessary packages..."
     apt remove -y \
         manpages \
         wireless-tools \
@@ -174,9 +217,9 @@ fi
 # STEP 4: Disable unnecessary timers
 # =============================================================================
 if step_done "step4_services"; then
-    log_skip "4/11: Services (already disabled)"
+    log_skip "4/12: Services (already disabled)"
 else
-    log_info "4/11: Disabling unnecessary services..."
+    log_info "4/12: Disabling unnecessary services..."
     # Kill apt auto-update processes first — they may hold dpkg locks and cause
     # 'systemctl stop' to hang indefinitely on slow storage.
     systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
@@ -273,9 +316,9 @@ fi
 # STEP 5: Docker + Node-RED + Caddy setup (directories only)
 # =============================================================================
 if step_done "step5_docker_dirs"; then
-    log_skip "5/11: Docker directories (already set up)"
+    log_skip "5/12: Docker directories (already set up)"
 else
-    log_info "5/11: Setting up Docker directories..."
+    log_info "5/12: Setting up Docker directories..."
 
     mkdir -p ${BONEIO_HOME}/docker/nodered/node-red/data
     mkdir -p ${BONEIO_HOME}/docker/nodered/caddy/data
@@ -314,9 +357,9 @@ fi
 # STEP 6: Mosquitto — bootstrap passwd file (data only, not config)
 # =============================================================================
 if step_done "step6_mosquitto"; then
-    log_skip "6/11: Mosquitto passwd (already bootstrapped)"
+    log_skip "6/12: Mosquitto passwd (already bootstrapped)"
 else
-    log_info "6/11: Bootstrapping Mosquitto passwd file..."
+    log_info "6/12: Bootstrapping Mosquitto passwd file..."
 
     systemctl stop mosquitto 2>/dev/null || true
     rm -f /var/lib/mosquitto/mosquitto.db /var/lib/mosquitto/*.db
@@ -337,9 +380,9 @@ fi
 # STEP 8: Early OLED boot splash (initramfs)
 # =============================================================================
 if step_done "step8_oled_splash"; then
-    log_skip "8/11: OLED splash (already installed)"
+    log_skip "8/12: OLED splash (already installed)"
 else
-    log_info "8/11: Installing early OLED boot splash (initramfs)..."
+    log_info "8/12: Installing early OLED boot splash (initramfs)..."
     INITRAMFS_HOOK_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/initramfs/hooks/oled-splash"
     INITRAMFS_SCRIPT_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/initramfs/scripts/init-premount/oled-splash"
 
@@ -362,7 +405,7 @@ fi
 # =============================================================================
 # STEP 9: BoneIO application installation
 # =============================================================================
-log_info "9/11: Installing BoneIO application..."
+log_info "9/12: Installing BoneIO application..."
 mkdir -p ${BONEIO_HOME}/boneio
 python3 -m venv ${BONEIO_HOME}/boneio/venv
 ${BONEIO_HOME}/boneio/venv/bin/pip install --upgrade pip
@@ -498,7 +541,7 @@ log_info "   Docker containers started"
 # =============================================================================
 # STEP 10: Device Tree Overlay
 # =============================================================================
-log_info "10/11: Building and installing Device Tree Overlay..."
+log_info "10/12: Building and installing Device Tree Overlay..."
 cd /opt/source
 if [ -d "black-pins-overlay" ]; then
     log_info "   Updating existing overlay repo..."
@@ -650,7 +693,7 @@ if [ "$VALIDATE_OK" = false ]; then
 fi
 log_info "Validation passed ✅"
 
-log_info "11/11: Running final cleanup..."
+log_info "11/12: Running final cleanup..."
 
 # UTF-8 locale
 sed -i 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen

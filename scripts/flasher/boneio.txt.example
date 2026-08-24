@@ -15,5 +15,11 @@
 #
 # If this file is absent or BOARD_VERSION is empty, the flasher will
 # auto-detect the board version by probing I2C2 for DS2484 at 0x18.
+#
+# Production / Station mode:
+# Set BONEIO_FLASHER_STATION=1 on factory SD flasher cards to automatically
+# switch root and boot into the newly flashed eMMC system without shutting down.
+#
+# BONEIO_FLASHER_STATION=1
 
 BOARD_VERSION=0.8

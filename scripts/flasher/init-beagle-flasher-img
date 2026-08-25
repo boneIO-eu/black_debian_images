@@ -823,7 +823,7 @@ station_boot_or_shutdown () {
 
 					# Swap in pre-built v1.0 cache (generated during setup_boneio.sh)
 					# so boneio.service starts in ~0.5s instead of ~20s
-					local V1_CACHE="${VENV_EXAMPLE}/config.yaml.v1.0.cache.pkl"
+					local V1_CACHE="/home/boneio/.cache/boneio/32x10_v1.0_config.cache.pkl"
 					if [ -f "$V1_CACHE" ]; then
 						cp "$V1_CACHE" "${BONEIO_HOME}/config.yaml.cache.pkl"
 						message="INFO: Swapped in pre-built v1.0 config cache" ; broadcast

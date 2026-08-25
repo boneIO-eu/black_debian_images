@@ -575,6 +575,7 @@ if os.path.isdir(example_base):
 
 # 3. Pre-generate v1.0 cache for 32x10 variant (ina226 + version 1.0)
 #    Flasher will swap this cache when DS2484 is detected, avoiding ~20s rebuild.
+#    Stored in ~/.cache/boneio/ (outside venv) so pip upgrade won't delete it.
 dir_32x10 = os.path.join(example_base, \"32x10\")
 if os.path.isdir(dir_32x10):
     tmp_v1 = \"/tmp/boneio_32x10_v1.0\"
@@ -591,10 +592,11 @@ if os.path.isdir(dir_32x10):
         f.write(content)
     try:
         y.load_config_from_file(cfg_v1)
-        # Copy v1.0 cache back to example_config/32x10/ as .v1.0.cache.pkl
         v1_cache = cfg_v1 + \".cache.pkl\"
         if os.path.exists(v1_cache):
-            dest = os.path.join(dir_32x10, \"config.yaml.v1.0.cache.pkl\")
+            cache_dir = os.path.expanduser(\"~/.cache/boneio\")
+            os.makedirs(cache_dir, exist_ok=True)
+            dest = os.path.join(cache_dir, \"32x10_v1.0_config.cache.pkl\")
             shutil.copy2(v1_cache, dest)
             print(f\"   Cached v1.0: {dest}\")
     except Exception as e:

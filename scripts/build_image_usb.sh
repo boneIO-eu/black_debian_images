@@ -134,7 +134,7 @@ log_info "BBB detected at ${BBB_USB_IP}!"
 # Wait a bit for SSH to be ready
 log_step "Waiting for SSH to be ready..."
 SSH_READY=false
-for i in $(seq 1 30); do
+for i in $(seq 1 150); do
     if sshpass -p "${BBB_DEFAULT_PASS}" ssh ${SSH_OPTS} "${BBB_DEFAULT_USER}@${BBB_USB_IP}" "echo ok" &>/dev/null; then
         SSH_READY=true
         break
@@ -151,7 +151,7 @@ for i in $(seq 1 30); do
 done
 
 if ! $SSH_READY; then
-    log_error "SSH not available after 60 seconds. Check BBB boot."
+    log_error "SSH not available after 5 minutes (300 seconds). Check BBB boot."
     exit 1
 fi
 log_info "SSH ready! Connected as '${BBB_DEFAULT_USER}'."

@@ -1,0 +1,43 @@
+mqtt: !include mqtt.yaml
+
+oled:
+  enabled: yes
+  screens:
+    - uptime
+    - network
+    - cpu
+    - disk
+    - memory
+    - swap
+    - outputs
+    - inputs
+    - web
+
+lm75:
+  - id: Board temperature
+    address: 0x48
+ina226:
+  - address: 0x40
+
+event: !include event.yaml
+binary_sensor: !include binary_sensor.yaml
+
+output: !include outputCover.yaml
+cover: !include cover.yaml
+
+boneio:
+  config_version: 4
+  name: "boneIO Black Cover"
+  version: 1.0
+  device_type: "cover"
+
+modbus:
+  uart: uart4
+
+logger:
+  default: info
+
+web:
+  port: 8090
+  proxy_port: 8443
+# adc: !include adc.yaml

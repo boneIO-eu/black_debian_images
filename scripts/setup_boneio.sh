@@ -460,21 +460,11 @@ if ! ${BONEIO_HOME}/boneio/venv/bin/python -c "from yaml import CLoader" 2>/dev/
     fi
 fi
 
-# Copy example configs (exclude __init__.py and __pycache__ to avoid
-# creating a shadow 'boneio' package in /home/boneio/boneio/ that would
-# hide the real one in site-packages and break migrations imports)
-BONEIO_PKG_PATH=$(${BONEIO_HOME}/boneio/venv/bin/python -c "import boneio; print(boneio.__path__[0])")
-if [ -d "${BONEIO_PKG_PATH}/example_config" ]; then
-    rsync -a --exclude='__init__.py' --exclude='__pycache__' \
-        ${BONEIO_PKG_PATH}/example_config/ ${BONEIO_HOME}/boneio/ 2>/dev/null || \
-    cp -r ${BONEIO_PKG_PATH}/example_config/* ${BONEIO_HOME}/boneio/ 2>/dev/null || true
-    # Safety: remove __init__.py if it leaked (breaks boneio.migrations import)
-    rm -f ${BONEIO_HOME}/boneio/__init__.py
-    rm -rf ${BONEIO_HOME}/boneio/__pycache__
-    # Set default 32x10 config if config.yaml is not yet present
-    if [ ! -f "${BONEIO_HOME}/boneio/config.yaml" ] && [ -d "${BONEIO_PKG_PATH}/example_config/32x10" ]; then
-        cp "${BONEIO_PKG_PATH}/example_config/32x10"/*.yaml "${BONEIO_HOME}/boneio/" 2>/dev/null || true
-    fi
+# Set initial default 32x10 config in /home/boneio/boneio/
+rm -f ${BONEIO_HOME}/boneio/__init__.py 2>/dev/null || true
+rm -rf ${BONEIO_HOME}/boneio/__pycache__ 2>/dev/null || true
+if [ -d "/opt/boneio_configs/32x10" ]; then
+    cp /opt/boneio_configs/32x10/*.yaml ${BONEIO_HOME}/boneio/ 2>/dev/null || true
 fi
 
 chown -R ${BONEIO_USER}:${BONEIO_USER} ${BONEIO_HOME}/boneio
@@ -548,78 +538,48 @@ fi
 log_info "   Pre-compiling Python bytecode..."
 ${BONEIO_HOME}/boneio/venv/bin/python3 -m compileall -q ${BONEIO_HOME}/boneio/venv
 
-# Pre-generate schema cache and config caches for all example configs
+# Install BoneIO configs for all variants (32x10, 24x16, cover, cover_mix, tester)
+log_info "   Installing BoneIO configs in /opt/boneio_configs/..."
+CONFIGS_DIR="/opt/boneio_configs"
+mkdir -p "$CONFIGS_DIR"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")"
+if [ -n "$SCRIPT_DIR" ] && [ -d "$SCRIPT_DIR/../configs" ]; then
+    cp -r "$SCRIPT_DIR/../configs"/* "$CONFIGS_DIR/"
+else
+    # Fallback when running piped via curl: download configs from GitHub
+    for variant in 32x10 24x16 cover cover_mix tester; do
+        mkdir -p "$CONFIGS_DIR/$variant"
+        for f in config.yaml event.yaml binary_sensor.yaml mqtt.yaml adc.yaml output32x10A.yaml output24x16A.yaml outputCover.yaml outputCoverMix.yaml cover.yaml; do
+            curl -fsSL "https://raw.githubusercontent.com/boneIO-eu/black_debian_images/main/configs/$variant/$f" -o "$CONFIGS_DIR/$variant/$f" 2>/dev/null || true
+        done
+    done
+fi
+
+# Pre-generate schema cache and config caches for all 5 variants
 log_info "   Pre-generating schema cache and config caches..."
 cd /tmp
 su - ${BONEIO_USER} -c "
 cd /tmp
 ${BONEIO_HOME}/boneio/venv/bin/python3 -c '
-import os, shutil
+import os
 import boneio.core.config.yaml_util as y
 
 # 1. Warm schema cache (~/.cache/boneio/schema.pkl)
 y._load_schema()
 
-# 2. Warm config cache for all variant subdirectories in example_config
-pkg_dir = os.path.dirname(y.__file__)
-example_base = os.path.normpath(os.path.join(pkg_dir, \"../../example_config\"))
-if os.path.isdir(example_base):
-    for root, dirs, files in os.walk(example_base):
-        if \"config.yaml\" in files:
-            cfg_path = os.path.join(root, \"config.yaml\")
-            try:
-                y.load_config_from_file(cfg_path)
-                print(f\"   Cached: {cfg_path}\")
-            except Exception as e:
-                print(f\"   Warning: failed to cache {cfg_path}: {e}\")
-
-# 3. Pre-generate station-mode caches for 32x10 variant.
-#    Flasher applies sed modifications (update_interval: 1s, and optionally
-#    ina219->ina226 + version 1.0 for v1.0 boards). We pre-build caches
-#    for BOTH variants so flasher just swaps in the right .cache.pkl file.
-#    Stored in ~/.cache/boneio/ (outside venv) so pip upgrade won't delete them.
-dir_32x10 = os.path.join(example_base, \"32x10\")
-if os.path.isdir(dir_32x10):
-    cache_dir = os.path.expanduser(\"~/.cache/boneio\")
-    os.makedirs(cache_dir, exist_ok=True)
-
-    # Helper: create temp copy, apply modifications, cache it
-    def _build_station_cache(label, replacements, cache_filename):
-        tmp_dir = f\"/tmp/boneio_station_{label}\"
-        if os.path.exists(tmp_dir):
-            shutil.rmtree(tmp_dir)
-        shutil.copytree(dir_32x10, tmp_dir)
-        cfg = os.path.join(tmp_dir, \"config.yaml\")
-        with open(cfg) as f:
-            content = f.read()
-        for old, new in replacements:
-            content = content.replace(old, new)
-        with open(cfg, \"w\") as f:
-            f.write(content)
+# 2. Warm config cache for each of the 5 variants in /opt/boneio_configs
+configs_dir = \"/opt/boneio_configs\"
+for variant in [\"32x10\", \"24x16\", \"cover\", \"cover_mix\", \"tester\"]:
+    cfg_path = os.path.join(configs_dir, variant, \"config.yaml\")
+    if os.path.isfile(cfg_path):
         try:
-            y.load_config_from_file(cfg)
-            pkl = cfg + \".cache.pkl\"
-            if os.path.exists(pkl):
-                dest = os.path.join(cache_dir, cache_filename)
-                shutil.copy2(pkl, dest)
-                print(f\"   Cached {label}: {dest}\")
+            y.load_config_from_file(cfg_path)
+            print(f\"   Cached {variant}: {cfg_path}\")
         except Exception as e:
-            print(f\"   Warning: failed to cache {label}: {e}\")
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+            print(f\"   Warning: failed to cache {variant}: {e}\")
 
-    # 3a. Station v0.8: add update_interval: 1s
-    _build_station_cache(\"station_v0.8\", [
-        (\"- address: 0x40\", \"- address: 0x40\\n    update_interval: 1s\"),
-    ], \"32x10_station_v0.8_config.cache.pkl\")
-
-    # 3b. Station v1.0: add update_interval: 1s + ina226 + version 1.0
-    _build_station_cache(\"station_v1.0\", [
-        (\"- address: 0x40\", \"- address: 0x40\\n    update_interval: 1s\"),
-        (\"version: 0.8\", \"version: 1.0\"),
-        (\"ina219:\", \"ina226:\"),
-    ], \"32x10_station_v1.0_config.cache.pkl\")
-
-# 4. If /home/boneio/boneio/config.yaml is present, warm it as well
+# 3. If /home/boneio/boneio/config.yaml is present, warm it as well
 main_cfg = \"${BONEIO_HOME}/boneio/config.yaml\"
 if os.path.isfile(main_cfg):
     try:
@@ -629,7 +589,7 @@ if os.path.isfile(main_cfg):
         print(f\"   Warning: failed to cache {main_cfg}: {e}\")
 '
 "
-chown -R ${BONEIO_USER}:${BONEIO_USER} ${BONEIO_HOME}/boneio ${BONEIO_HOME}/.cache 2>/dev/null || true
+chown -R ${BONEIO_USER}:${BONEIO_USER} /opt/boneio_configs ${BONEIO_HOME}/boneio ${BONEIO_HOME}/.cache 2>/dev/null || true
 
 log_info "   BoneIO application installed"
 

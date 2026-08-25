@@ -216,6 +216,22 @@ if [ -f "${OLED_BOOT_SPLASH_SH}" ]; then
     echo "Installed OLED boot splash wrapper"
 fi
 
+# Apply tester config + cache to the SD card's own rootfs (used in station mode)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -d "/tmp/flasher_rootfs/opt/boneio_configs/tester" ]; then
+    rm -f /tmp/flasher_rootfs/home/boneio/boneio/*.yaml /tmp/flasher_rootfs/home/boneio/boneio/*.cache.pkl
+    cp /tmp/flasher_rootfs/opt/boneio_configs/tester/*.yaml /tmp/flasher_rootfs/home/boneio/boneio/
+    cp /tmp/flasher_rootfs/opt/boneio_configs/tester/*.cache.pkl /tmp/flasher_rootfs/home/boneio/boneio/ 2>/dev/null || true
+    chown -R 1000:1000 /tmp/flasher_rootfs/home/boneio/boneio/* 2>/dev/null || true
+    echo "Applied tester config to SD card rootfs"
+elif [ -d "$SCRIPT_DIR/../configs/tester" ]; then
+    rm -f /tmp/flasher_rootfs/home/boneio/boneio/*.yaml /tmp/flasher_rootfs/home/boneio/boneio/*.cache.pkl
+    cp "$SCRIPT_DIR/../configs/tester"/*.yaml /tmp/flasher_rootfs/home/boneio/boneio/
+    cp "$SCRIPT_DIR/../configs/tester"/*.cache.pkl /tmp/flasher_rootfs/home/boneio/boneio/ 2>/dev/null || true
+    chown -R 1000:1000 /tmp/flasher_rootfs/home/boneio/boneio/* 2>/dev/null || true
+    echo "Applied tester config to SD card rootfs from repo configs"
+fi
+
 # Pre-generate SSH host keys on the PC for the flasher SD card (takes 0.01s on PC)
 # and disable bbbio-set-sysconf so it boots into station mode instantly with zero delay.
 ssh-keygen -A -f /tmp/flasher_rootfs 2>/dev/null || true

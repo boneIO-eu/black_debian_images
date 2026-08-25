@@ -217,8 +217,8 @@ install_flasher_script() {
 }
 
 # Function to apply device-specific BoneIO config from example_config inside image
-# Finds the example_config directory in the installed boneio package (venv)
-# and copies the correct variant's YAML files to /home/boneio/boneio/
+# Finds the config directory in /opt/boneio_configs, repo configs/, or venv
+# and copies the correct variant's YAML files and cache to /home/boneio/boneio/
 apply_device_config() {
     local device_name="$1"
     local boneio_config_dir="$MOUNT_POINT/home/boneio/boneio"
@@ -228,27 +228,25 @@ apply_device_config() {
         return 1
     fi
     
-    # Find example_config inside the venv's boneio package
-    local example_config_base=""
-    for site_pkg in "$MOUNT_POINT"/home/boneio/boneio/venv/lib/python*/site-packages/boneio/example_config; do
-        if [ -d "$site_pkg" ]; then
-            example_config_base="$site_pkg"
-            break
-        fi
-    done
-    
-    if [ -z "$example_config_base" ]; then
-        print_warning "example_config not found in boneio venv"
-        return 1
+    # 1. Check /opt/boneio_configs inside the mounted image
+    local example_dir=""
+    if [ -d "$MOUNT_POINT/opt/boneio_configs/$device_name" ]; then
+        example_dir="$MOUNT_POINT/opt/boneio_configs/$device_name"
+    # 2. Check repo configs/ directory
+    elif [ -d "$SCRIPT_DIR/../configs/$device_name" ]; then
+        example_dir="$SCRIPT_DIR/../configs/$device_name"
+    # 3. Fallback to venv example_config
+    else
+        for site_pkg in "$MOUNT_POINT"/home/boneio/boneio/venv/lib/python*/site-packages/boneio/example_config; do
+            if [ -d "$site_pkg/$device_name" ]; then
+                example_dir="$site_pkg/$device_name"
+                break
+            fi
+        done
     fi
     
-    # Map generate_all_images device names to example_config folder names
-    local config_folder="$device_name"
-    
-    local example_dir="${example_config_base}/${config_folder}"
-    if [ ! -d "$example_dir" ]; then
-        print_error "Example config not found for device '$device_name' at: $example_dir"
-        print_info "Available configs: $(ls "$example_config_base" 2>/dev/null)"
+    if [ -z "$example_dir" ] || [ ! -d "$example_dir" ]; then
+        print_error "Config not found for device '$device_name'!"
         return 1
     fi
     
@@ -257,11 +255,9 @@ apply_device_config() {
     rm -f "$boneio_config_dir"/*.yaml
     rm -f "$boneio_config_dir"/*.cache.pkl
     rm -f "$boneio_config_dir"/state.json
-    # Remove example_config subdirectories (left over from setup_boneio.sh)
-    # and __init__.py which creates a shadow 'boneio' package breaking imports
     rm -f "$boneio_config_dir"/__init__.py
     rm -rf "$boneio_config_dir"/__pycache__
-    for subdir in 24x16 32x10 48x4 cover cover_mix different_configs; do
+    for subdir in 24x16 32x10 48x4 cover cover_mix different_configs tester; do
         rm -rf "$boneio_config_dir/$subdir"
     done
     
@@ -396,6 +392,9 @@ create_emmc_flasher() {
     
     # Install flasher script + OLED helpers (uses $MOUNT_POINT)
     install_flasher_script
+
+    # Apply tester config + cache to the SD card's own rootfs (used in station mode)
+    apply_device_config "tester"
 
     # Pre-generate SSH host keys on the PC for the flasher SD card (takes 0.01s on PC)
     # and disable bbbio-set-sysconf so it boots into station mode instantly with zero delay.

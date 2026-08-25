@@ -554,7 +554,7 @@ cd /tmp
 su - ${BONEIO_USER} -c "
 cd /tmp
 ${BONEIO_HOME}/boneio/venv/bin/python3 -c '
-import os
+import os, shutil
 import boneio.core.config.yaml_util as y
 
 # 1. Warm schema cache (~/.cache/boneio/schema.pkl)
@@ -573,7 +573,35 @@ if os.path.isdir(example_base):
             except Exception as e:
                 print(f\"   Warning: failed to cache {cfg_path}: {e}\")
 
-# 3. If /home/boneio/boneio/config.yaml is present, warm it as well
+# 3. Pre-generate v1.0 cache for 32x10 variant (ina226 + version 1.0)
+#    Flasher will swap this cache when DS2484 is detected, avoiding ~20s rebuild.
+dir_32x10 = os.path.join(example_base, \"32x10\")
+if os.path.isdir(dir_32x10):
+    tmp_v1 = \"/tmp/boneio_32x10_v1.0\"
+    if os.path.exists(tmp_v1):
+        shutil.rmtree(tmp_v1)
+    shutil.copytree(dir_32x10, tmp_v1)
+    cfg_v1 = os.path.join(tmp_v1, \"config.yaml\")
+    # Apply v1.0 modifications
+    with open(cfg_v1) as f:
+        content = f.read()
+    content = content.replace(\"version: 0.8\", \"version: 1.0\")
+    content = content.replace(\"ina219:\", \"ina226:\")
+    with open(cfg_v1, \"w\") as f:
+        f.write(content)
+    try:
+        y.load_config_from_file(cfg_v1)
+        # Copy v1.0 cache back to example_config/32x10/ as .v1.0.cache.pkl
+        v1_cache = cfg_v1 + \".cache.pkl\"
+        if os.path.exists(v1_cache):
+            dest = os.path.join(dir_32x10, \"config.yaml.v1.0.cache.pkl\")
+            shutil.copy2(v1_cache, dest)
+            print(f\"   Cached v1.0: {dest}\")
+    except Exception as e:
+        print(f\"   Warning: failed to cache v1.0 variant: {e}\")
+    shutil.rmtree(tmp_v1, ignore_errors=True)
+
+# 4. If /home/boneio/boneio/config.yaml is present, warm it as well
 main_cfg = \"${BONEIO_HOME}/boneio/config.yaml\"
 if os.path.isfile(main_cfg):
     try:

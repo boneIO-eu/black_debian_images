@@ -821,17 +821,16 @@ station_boot_or_shutdown () {
 					sed -i 's/\(version:\s*\)0\.8/\11.0/' "${BONEIO_HOME}/config.yaml" 2>/dev/null || true
 					sed -i 's/^ina219:/ina226:/' "${BONEIO_HOME}/config.yaml" 2>/dev/null || true
 
-					# Config was modified by sed — cached hash is now stale.
-					# Rebuild config cache so boneio.service starts instantly.
-					rm -f "${BONEIO_HOME}/config.yaml.cache.pkl" 2>/dev/null || true
-					message="INFO: Rebuilding config cache for v1.0..." ; broadcast
-					local VENV_PY="${BONEIO_HOME}/venv/bin/python3"
-					if [ -x "$VENV_PY" ]; then
-						su - boneio -c "cd /tmp && $VENV_PY -c \"
-import boneio.core.config.yaml_util as y
-y.load_config_from_file('${BONEIO_HOME}/config.yaml')
-print('Config cache rebuilt for v1.0')
-\"" 2>/dev/null || message="WARNING: Config cache rebuild failed" ; broadcast
+					# Swap in pre-built v1.0 cache (generated during setup_boneio.sh)
+					# so boneio.service starts in ~0.5s instead of ~20s
+					local V1_CACHE="${VENV_EXAMPLE}/config.yaml.v1.0.cache.pkl"
+					if [ -f "$V1_CACHE" ]; then
+						cp "$V1_CACHE" "${BONEIO_HOME}/config.yaml.cache.pkl"
+						message="INFO: Swapped in pre-built v1.0 config cache" ; broadcast
+					else
+						# Fallback: remove stale v0.8 cache, let boneio rebuild on first boot
+						rm -f "${BONEIO_HOME}/config.yaml.cache.pkl" 2>/dev/null || true
+						message="WARNING: v1.0 cache not found, boneio will rebuild on first boot (~20s)" ; broadcast
 					fi
 				fi
 				if [ "$RELAY_INVERTED" = true ]; then

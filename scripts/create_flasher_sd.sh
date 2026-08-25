@@ -216,6 +216,11 @@ if [ -f "${OLED_BOOT_SPLASH_SH}" ]; then
     echo "Installed OLED boot splash wrapper"
 fi
 
+# Disable bbbio-set-sysconf on the SD card rootfs so it never triggers a reboot in station mode
+rm -f /tmp/flasher_rootfs/etc/bbb.io/ssh_regenerate 2>/dev/null || true
+rm -f /tmp/flasher_rootfs/etc/systemd/system/multi-user.target.wants/bbbio-set-sysconf.service 2>/dev/null || true
+rm -f /tmp/flasher_rootfs/lib/systemd/system/multi-user.target.wants/bbbio-set-sysconf.service 2>/dev/null || true
+
 # NOW enable cmdline flasher on the SD card's own uEnv.txt
 # This only affects the SD card boot - the image inside has it disabled.
 if [ -f "$UENV_FILE" ]; then

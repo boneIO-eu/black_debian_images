@@ -394,9 +394,11 @@ create_emmc_flasher() {
     cp "$emmc_payload" "$MOUNT_POINT/boneio-emmc.img"
     rm -f "$emmc_payload"
     
-    # Install flasher script + OLED helpers (uses $MOUNT_POINT)
-    install_flasher_script
-    
+    # Disable bbbio-set-sysconf on the SD card rootfs so it never triggers a reboot in station mode
+    rm -f "$MOUNT_POINT/etc/bbb.io/ssh_regenerate" 2>/dev/null || true
+    rm -f "$MOUNT_POINT/etc/systemd/system/multi-user.target.wants/bbbio-set-sysconf.service" 2>/dev/null || true
+    rm -f "$MOUNT_POINT/lib/systemd/system/multi-user.target.wants/bbbio-set-sysconf.service" 2>/dev/null || true
+
     # NOW enable cmdline flasher on the SD card's own uEnv.txt
     if [ -f "$uenv_file" ]; then
         echo "" >> "$uenv_file"

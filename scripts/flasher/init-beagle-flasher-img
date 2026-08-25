@@ -370,8 +370,15 @@ fix_emmc_rootfs () {
 		message="INFO: growpart not available, using sfdisk..." ; broadcast
 		echo ", +" | sfdisk -N ${media_rootfs} ${DESTINATION} --force 2>/dev/null || true
 	fi
+	# Ensure kernel sees updated partition table before resize
 	partprobe ${DESTINATION} 2>/dev/null || true
-	sleep 1
+	blockdev --rereadpt ${DESTINATION} 2>/dev/null || true
+	udevadm settle --timeout=5 2>/dev/null || true
+	sleep 3
+
+	# Log partition size so we can verify growpart worked
+	PART_SIZE_SECTORS=$(cat /sys/class/block/$(basename ${EMMC_ROOTFS})/size 2>/dev/null || echo "?")
+	message="INFO: Partition ${EMMC_ROOTFS} size: ${PART_SIZE_SECTORS} sectors" ; broadcast
 
 	# Resize ext4 filesystem to fill expanded partition
 	message="INFO: Resizing filesystem on ${EMMC_ROOTFS}..." ; broadcast
@@ -391,16 +398,28 @@ fix_emmc_rootfs () {
 		message="INFO: resize2fs succeeded" ; broadcast
 		RESIZE_OK=true
 	else
-		# Retry: sometimes e2fsck needs a second pass
+		# Retry 1: e2fsck + resize2fs
 		message="WARNING: resize2fs failed, retrying after e2fsck..." ; broadcast
 		e2fsck -f -y ${EMMC_ROOTFS} 2>/dev/null
 		if resize2fs ${EMMC_ROOTFS} 2>/dev/null; then
-			message="INFO: resize2fs succeeded on retry" ; broadcast
+			message="INFO: resize2fs succeeded on retry 1" ; broadcast
 			RESIZE_OK=true
 		else
-			message="WARNING: resize2fs failed! Will add first-boot fallback." ; broadcast
-			oled_msg "Setup system" "[===--------] 30%" "Resize deferred"
-			sleep 2
+			# Retry 2: full partition table re-read + longer settle + retry
+			message="WARNING: resize2fs retry 1 failed, forcing partition re-read..." ; broadcast
+			blockdev --rereadpt ${DESTINATION} 2>/dev/null || true
+			partprobe ${DESTINATION} 2>/dev/null || true
+			udevadm settle --timeout=10 2>/dev/null || true
+			sleep 3
+			e2fsck -f -y ${EMMC_ROOTFS} 2>/dev/null
+			if resize2fs ${EMMC_ROOTFS} 2>/dev/null; then
+				message="INFO: resize2fs succeeded on retry 2" ; broadcast
+				RESIZE_OK=true
+			else
+				message="WARNING: resize2fs failed! Will add first-boot fallback." ; broadcast
+				oled_msg "Setup system" "[===--------] 30%" "Resize deferred"
+				sleep 2
+			fi
 		fi
 	fi
 	# Verify new size
@@ -831,6 +850,16 @@ with open(state_file, 'w') as f: json.dump(state, f, indent=2)
 		else
 			message="WARNING: example_config/32x10 not found — using existing SD config" ; broadcast
 		fi
+
+		# Generate SSH host keys for the SD card system if missing,
+		# and remove ssh_regenerate / disable bbbio-set-sysconf so it NEVER triggers a reboot in station mode.
+		if [ ! -f /etc/ssh/ssh_host_rsa_key ] && [ ! -f /etc/ssh/ssh_host_ed25519_key ]; then
+			message="INFO: Generating SSH keys for SD card station mode..." ; broadcast
+			ssh-keygen -A 2>/dev/null || true
+		fi
+		rm -f /etc/bbb.io/ssh_regenerate 2>/dev/null || true
+		rm -f /etc/systemd/system/multi-user.target.wants/bbbio-set-sysconf.service 2>/dev/null || true
+		rm -f /lib/systemd/system/multi-user.target.wants/bbbio-set-sysconf.service 2>/dev/null || true
 
 		# 2. Stop background processes
 		oled_stop_daemon

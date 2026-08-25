@@ -523,7 +523,15 @@ if not ok:
     print('ERROR: Migration apply_all() returned False', file=sys.stderr)
     sys.exit(1)
 print(f'Migrations applied. Status: {r.status}')
-    /usr/sbin/boneio-migrate || log_warn "   Some migrations reported warnings (non-fatal)"
+"
+    if [ $? -ne 0 ]; then
+        log_error "   Migration apply failed!"
+        log_error "   Check /var/log/boneio-migrate.log for details"
+    else
+        log_info "   All migrations applied successfully"
+    fi
+else
+    log_warn "boneio-migrate bootstrap not found, skipping migration apply"
 fi
 
 # Pre-compile Python bytecode (.pyc) to speed up cold startup
@@ -581,7 +589,7 @@ if os.path.isfile(main_cfg):
         print(f\"   Warning: failed to cache {main_cfg}: {e}\")
 '
 "
-chown -R ${BONEIO_USER}:${BONEIO_USER} ${BONEIO_HOME} 2>/dev/null || true 2>/dev/null || true
+chown -R ${BONEIO_USER}:${BONEIO_USER} ${BONEIO_HOME} 2>/dev/null || true
 
 log_info "   BoneIO application installed"
 

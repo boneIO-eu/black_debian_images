@@ -463,8 +463,8 @@ fi
 # Set initial default 32x10 config in /home/boneio/boneio/
 rm -f ${BONEIO_HOME}/boneio/__init__.py 2>/dev/null || true
 rm -rf ${BONEIO_HOME}/boneio/__pycache__ 2>/dev/null || true
-if [ -d "/opt/boneio_configs/32x10" ]; then
-    cp /opt/boneio_configs/32x10/*.yaml ${BONEIO_HOME}/boneio/ 2>/dev/null || true
+if [ -d "${BONEIO_HOME}/.cache/boneio_configs/32x10" ]; then
+    cp ${BONEIO_HOME}/.cache/boneio_configs/32x10/*.yaml ${BONEIO_HOME}/boneio/ 2>/dev/null || true
 fi
 
 chown -R ${BONEIO_USER}:${BONEIO_USER} ${BONEIO_HOME}/boneio
@@ -523,15 +523,7 @@ if not ok:
     print('ERROR: Migration apply_all() returned False', file=sys.stderr)
     sys.exit(1)
 print(f'Migrations applied. Status: {r.status}')
-"
-    if [ $? -ne 0 ]; then
-        log_error "   Migration apply failed!"
-        log_error "   Check /var/log/boneio-migrate.log for details"
-    else
-        log_info "   All migrations applied successfully"
-    fi
-else
-    log_warn "boneio-migrate bootstrap not found, skipping migration apply"
+    /usr/sbin/boneio-migrate || log_warn "   Some migrations reported warnings (non-fatal)"
 fi
 
 # Pre-compile Python bytecode (.pyc) to speed up cold startup
@@ -539,8 +531,8 @@ log_info "   Pre-compiling Python bytecode..."
 ${BONEIO_HOME}/boneio/venv/bin/python3 -m compileall -q ${BONEIO_HOME}/boneio/venv
 
 # Install BoneIO configs for all variants (32x10, 24x16, cover, cover_mix, tester)
-log_info "   Installing BoneIO configs in /opt/boneio_configs/..."
-CONFIGS_DIR="/opt/boneio_configs"
+log_info "   Installing BoneIO configs in ${BONEIO_HOME}/.cache/boneio_configs/..."
+CONFIGS_DIR="${BONEIO_HOME}/.cache/boneio_configs"
 mkdir -p "$CONFIGS_DIR"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")"
@@ -568,8 +560,8 @@ import boneio.core.config.yaml_util as y
 # 1. Warm schema cache (~/.cache/boneio/schema.pkl)
 y._load_schema()
 
-# 2. Warm config cache for each of the 5 variants in /opt/boneio_configs
-configs_dir = \"/opt/boneio_configs\"
+# 2. Warm config cache for each of the 5 variants in ~/.cache/boneio_configs
+configs_dir = os.path.expanduser(\"~/.cache/boneio_configs\")
 for variant in [\"32x10\", \"24x16\", \"cover\", \"cover_mix\", \"tester\"]:
     cfg_path = os.path.join(configs_dir, variant, \"config.yaml\")
     if os.path.isfile(cfg_path):
@@ -589,7 +581,7 @@ if os.path.isfile(main_cfg):
         print(f\"   Warning: failed to cache {main_cfg}: {e}\")
 '
 "
-chown -R ${BONEIO_USER}:${BONEIO_USER} /opt/boneio_configs ${BONEIO_HOME}/boneio ${BONEIO_HOME}/.cache 2>/dev/null || true
+chown -R ${BONEIO_USER}:${BONEIO_USER} ${BONEIO_HOME} 2>/dev/null || true 2>/dev/null || true
 
 log_info "   BoneIO application installed"
 

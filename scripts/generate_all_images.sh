@@ -217,7 +217,7 @@ install_flasher_script() {
 }
 
 # Function to apply device-specific BoneIO config from example_config inside image
-# Finds the config directory in /opt/boneio_configs, repo configs/, or venv
+# Finds the config directory in /home/boneio/.cache/boneio_configs, repo configs/, or venv
 # and copies the correct variant's YAML files and cache to /home/boneio/boneio/
 apply_device_config() {
     local device_name="$1"
@@ -228,10 +228,10 @@ apply_device_config() {
         return 1
     fi
     
-    # 1. Check /opt/boneio_configs inside the mounted image
+    # 1. Check /home/boneio/.cache/boneio_configs inside the mounted image
     local example_dir=""
-    if [ -d "$MOUNT_POINT/opt/boneio_configs/$device_name" ]; then
-        example_dir="$MOUNT_POINT/opt/boneio_configs/$device_name"
+    if [ -d "$MOUNT_POINT/home/boneio/.cache/boneio_configs/$device_name" ]; then
+        example_dir="$MOUNT_POINT/home/boneio/.cache/boneio_configs/$device_name"
     # 2. Check repo configs/ directory
     elif [ -d "$SCRIPT_DIR/../configs/$device_name" ]; then
         example_dir="$SCRIPT_DIR/../configs/$device_name"

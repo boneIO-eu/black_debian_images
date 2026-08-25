@@ -394,6 +394,9 @@ create_emmc_flasher() {
     cp "$emmc_payload" "$MOUNT_POINT/boneio-emmc.img"
     rm -f "$emmc_payload"
     
+    # Install flasher script + OLED helpers (uses $MOUNT_POINT)
+    install_flasher_script
+
     # Pre-generate SSH host keys on the PC for the flasher SD card (takes 0.01s on PC)
     # and disable bbbio-set-sysconf so it boots into station mode instantly with zero delay.
     ssh-keygen -A -f "$MOUNT_POINT" 2>/dev/null || true

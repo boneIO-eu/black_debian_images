@@ -820,6 +820,19 @@ station_boot_or_shutdown () {
 				if [ -f "${BONEIO_HOME}/config.yaml" ]; then
 					sed -i 's/\(version:\s*\)0\.8/\11.0/' "${BONEIO_HOME}/config.yaml" 2>/dev/null || true
 					sed -i 's/^ina219:/ina226:/' "${BONEIO_HOME}/config.yaml" 2>/dev/null || true
+
+					# Config was modified by sed — cached hash is now stale.
+					# Rebuild config cache so boneio.service starts instantly.
+					rm -f "${BONEIO_HOME}/config.yaml.cache.pkl" 2>/dev/null || true
+					message="INFO: Rebuilding config cache for v1.0..." ; broadcast
+					local VENV_PY="${BONEIO_HOME}/venv/bin/python3"
+					if [ -x "$VENV_PY" ]; then
+						su - boneio -c "cd /tmp && $VENV_PY -c \"
+import boneio.core.config.yaml_util as y
+y.load_config_from_file('${BONEIO_HOME}/config.yaml')
+print('Config cache rebuilt for v1.0')
+\"" 2>/dev/null || message="WARNING: Config cache rebuild failed" ; broadcast
+					fi
 				fi
 				if [ "$RELAY_INVERTED" = true ]; then
 					python3 -c "
@@ -838,11 +851,6 @@ with open(state_file, 'w') as f: json.dump(state, f, indent=2)
 " 2>/dev/null || true
 					chown 1000:1000 /home/boneio/boneiostate.json 2>/dev/null || true
 				fi
-			fi
-
-			# Set INA update_interval to 1s for fast current readings during relay test
-			if [ -f "${BONEIO_HOME}/config.yaml" ]; then
-				sed -i '/address: 0x40/a\    update_interval: 1s' "${BONEIO_HOME}/config.yaml" 2>/dev/null || true
 			fi
 
 			chown -R 1000:1000 "${BONEIO_HOME}" 2>/dev/null || true

@@ -252,9 +252,10 @@ apply_device_config() {
         return 1
     fi
     
-    # Remove old YAML config files and state (but keep venv, etc.)
-    print_info "Removing old config YAMLs and state from $boneio_config_dir..."
+    # Remove old YAML config files, caches and state (but keep venv, etc.)
+    print_info "Removing old config YAMLs, caches and state from $boneio_config_dir..."
     rm -f "$boneio_config_dir"/*.yaml
+    rm -f "$boneio_config_dir"/*.cache.pkl
     rm -f "$boneio_config_dir"/state.json
     # Remove example_config subdirectories (left over from setup_boneio.sh)
     # and __init__.py which creates a shadow 'boneio' package breaking imports
@@ -264,17 +265,18 @@ apply_device_config() {
         rm -rf "$boneio_config_dir/$subdir"
     done
     
-    # Copy new config files for this variant
+    # Copy new config files and pre-generated cache for this variant
     print_info "Applying $device_name config from $example_dir..."
     cp -v "$example_dir"/*.yaml "$boneio_config_dir/"
+    cp -v "$example_dir"/*.cache.pkl "$boneio_config_dir/" 2>/dev/null || true
     
     # Fix ownership (boneio user, UID/GID 1000 typically)
-    chown -R 1000:1000 "$boneio_config_dir"/*.yaml 2>/dev/null || true
+    chown -R 1000:1000 "$boneio_config_dir"/* 2>/dev/null || true
     
     print_info "Device config applied: $device_name"
     
     # Show what was copied
-    ls -la "$boneio_config_dir"/*.yaml 2>/dev/null
+    ls -la "$boneio_config_dir"/*.yaml "$boneio_config_dir"/*.cache.pkl 2>/dev/null || ls -la "$boneio_config_dir"/*.yaml 2>/dev/null
 }
 
 # Function to create eMMC flasher image (dd-to-SD-card ready)

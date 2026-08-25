@@ -443,7 +443,7 @@ log_info "9/12: Installing BoneIO application..."
 mkdir -p ${BONEIO_HOME}/boneio
 python3 -m venv ${BONEIO_HOME}/boneio/venv
 ${BONEIO_HOME}/boneio/venv/bin/pip install --upgrade pip
-${BONEIO_HOME}/boneio/venv/bin/pip install --upgrade --pre boneio
+${BONEIO_HOME}/boneio/venv/bin/pip install --upgrade boneio
 
 # Ensure PyYAML has C extension (CLoader). pip install --upgrade may
 # overwrite our bundled armv7l wheel with a PyPI sdist lacking libyaml.
@@ -471,6 +471,10 @@ if [ -d "${BONEIO_PKG_PATH}/example_config" ]; then
     # Safety: remove __init__.py if it leaked (breaks boneio.migrations import)
     rm -f ${BONEIO_HOME}/boneio/__init__.py
     rm -rf ${BONEIO_HOME}/boneio/__pycache__
+    # Set default 32x10 config if config.yaml is not yet present
+    if [ ! -f "${BONEIO_HOME}/boneio/config.yaml" ] && [ -d "${BONEIO_PKG_PATH}/example_config/32x10" ]; then
+        cp "${BONEIO_PKG_PATH}/example_config/32x10"/*.yaml "${BONEIO_HOME}/boneio/" 2>/dev/null || true
+    fi
 fi
 
 chown -R ${BONEIO_USER}:${BONEIO_USER} ${BONEIO_HOME}/boneio
@@ -539,6 +543,47 @@ print(f'Migrations applied. Status: {r.status}')
 else
     log_warn "boneio-migrate bootstrap not found, skipping migration apply"
 fi
+
+# Pre-compile Python bytecode (.pyc) to speed up cold startup
+log_info "   Pre-compiling Python bytecode..."
+${BONEIO_HOME}/boneio/venv/bin/python3 -m compileall -q ${BONEIO_HOME}/boneio/venv
+
+# Pre-generate schema cache and config caches for all example configs
+log_info "   Pre-generating schema cache and config caches..."
+cd /tmp
+su - ${BONEIO_USER} -c "
+cd /tmp
+${BONEIO_HOME}/boneio/venv/bin/python3 -c '
+import os
+import boneio.core.config.yaml_util as y
+
+# 1. Warm schema cache (~/.cache/boneio/schema.pkl)
+y._load_schema()
+
+# 2. Warm config cache for all variant subdirectories in example_config
+pkg_dir = os.path.dirname(y.__file__)
+example_base = os.path.normpath(os.path.join(pkg_dir, \"../../example_config\"))
+if os.path.isdir(example_base):
+    for root, dirs, files in os.walk(example_base):
+        if \"config.yaml\" in files:
+            cfg_path = os.path.join(root, \"config.yaml\")
+            try:
+                y.load_config_from_file(cfg_path)
+                print(f\"   Cached: {cfg_path}\")
+            except Exception as e:
+                print(f\"   Warning: failed to cache {cfg_path}: {e}\")
+
+# 3. If /home/boneio/boneio/config.yaml is present, warm it as well
+main_cfg = \"${BONEIO_HOME}/boneio/config.yaml\"
+if os.path.isfile(main_cfg):
+    try:
+        y.load_config_from_file(main_cfg)
+        print(f\"   Cached: {main_cfg}\")
+    except Exception as e:
+        print(f\"   Warning: failed to cache {main_cfg}: {e}\")
+'
+"
+chown -R ${BONEIO_USER}:${BONEIO_USER} ${BONEIO_HOME}/boneio ${BONEIO_HOME}/.cache 2>/dev/null || true
 
 log_info "   BoneIO application installed"
 

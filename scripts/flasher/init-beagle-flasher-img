@@ -792,8 +792,9 @@ station_boot_or_shutdown () {
 
 		if [ -n "$VENV_EXAMPLE" ]; then
 			message="INFO: Applying 32x10A test config from ${VENV_EXAMPLE}..." ; broadcast
-			rm -f "${BONEIO_HOME}"/*.yaml 2>/dev/null || true
+			rm -f "${BONEIO_HOME}"/*.yaml "${BONEIO_HOME}"/*.cache.pkl 2>/dev/null || true
 			cp "${VENV_EXAMPLE}"/*.yaml "${BONEIO_HOME}/" 2>/dev/null || true
+			cp "${VENV_EXAMPLE}"/*.cache.pkl "${BONEIO_HOME}/" 2>/dev/null || true
 
 			# Apply board v1.0 adjustments if v1.0 detected
 			if [ "$BOARD_HAS_DS2484" = true ]; then

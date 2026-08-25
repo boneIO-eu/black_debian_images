@@ -813,26 +813,29 @@ station_boot_or_shutdown () {
 			message="INFO: Applying 32x10A test config from ${VENV_EXAMPLE}..." ; broadcast
 			rm -f "${BONEIO_HOME}"/*.yaml "${BONEIO_HOME}"/*.cache.pkl 2>/dev/null || true
 			cp "${VENV_EXAMPLE}"/*.yaml "${BONEIO_HOME}/" 2>/dev/null || true
-			cp "${VENV_EXAMPLE}"/*.cache.pkl "${BONEIO_HOME}/" 2>/dev/null || true
+
+			# Set INA update_interval to 1s for fast current readings during relay test
+			if [ -f "${BONEIO_HOME}/config.yaml" ]; then
+				sed -i '/address: 0x40/a\    update_interval: 1s' "${BONEIO_HOME}/config.yaml" 2>/dev/null || true
+			fi
 
 			# Apply board v1.0 adjustments if v1.0 detected
 			if [ "$BOARD_HAS_DS2484" = true ]; then
 				if [ -f "${BONEIO_HOME}/config.yaml" ]; then
 					sed -i 's/\(version:\s*\)0\.8/\11.0/' "${BONEIO_HOME}/config.yaml" 2>/dev/null || true
 					sed -i 's/^ina219:/ina226:/' "${BONEIO_HOME}/config.yaml" 2>/dev/null || true
-
-					# Swap in pre-built v1.0 cache (generated during setup_boneio.sh)
-					# so boneio.service starts in ~0.5s instead of ~20s
-					local V1_CACHE="/home/boneio/.cache/boneio/32x10_v1.0_config.cache.pkl"
-					if [ -f "$V1_CACHE" ]; then
-						cp "$V1_CACHE" "${BONEIO_HOME}/config.yaml.cache.pkl"
-						message="INFO: Swapped in pre-built v1.0 config cache" ; broadcast
-					else
-						# Fallback: remove stale v0.8 cache, let boneio rebuild on first boot
-						rm -f "${BONEIO_HOME}/config.yaml.cache.pkl" 2>/dev/null || true
-						message="WARNING: v1.0 cache not found, boneio will rebuild on first boot (~20s)" ; broadcast
-					fi
 				fi
+
+				# Swap in pre-built station v1.0 cache (with update_interval + ina226)
+				local V1_CACHE="/home/boneio/.cache/boneio/32x10_station_v1.0_config.cache.pkl"
+				if [ -f "$V1_CACHE" ]; then
+					cp "$V1_CACHE" "${BONEIO_HOME}/config.yaml.cache.pkl"
+					message="INFO: Swapped in pre-built station v1.0 config cache" ; broadcast
+				else
+					rm -f "${BONEIO_HOME}/config.yaml.cache.pkl" 2>/dev/null || true
+					message="WARNING: station v1.0 cache not found, boneio will rebuild on first boot (~20s)" ; broadcast
+				fi
+
 				if [ "$RELAY_INVERTED" = true ]; then
 					python3 -c "
 import json, os
@@ -849,6 +852,16 @@ state['hardware']['mcp_0x25_inverted'] = True
 with open(state_file, 'w') as f: json.dump(state, f, indent=2)
 " 2>/dev/null || true
 					chown 1000:1000 /home/boneio/boneiostate.json 2>/dev/null || true
+				fi
+			else
+				# v0.8 board: swap in pre-built station v0.8 cache (with update_interval)
+				local V08_CACHE="/home/boneio/.cache/boneio/32x10_station_v0.8_config.cache.pkl"
+				if [ -f "$V08_CACHE" ]; then
+					cp "$V08_CACHE" "${BONEIO_HOME}/config.yaml.cache.pkl"
+					message="INFO: Swapped in pre-built station v0.8 config cache" ; broadcast
+				else
+					rm -f "${BONEIO_HOME}/config.yaml.cache.pkl" 2>/dev/null || true
+					message="WARNING: station v0.8 cache not found, boneio will rebuild on first boot (~20s)" ; broadcast
 				fi
 			fi
 

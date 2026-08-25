@@ -573,35 +573,51 @@ if os.path.isdir(example_base):
             except Exception as e:
                 print(f\"   Warning: failed to cache {cfg_path}: {e}\")
 
-# 3. Pre-generate v1.0 cache for 32x10 variant (ina226 + version 1.0)
-#    Flasher will swap this cache when DS2484 is detected, avoiding ~20s rebuild.
-#    Stored in ~/.cache/boneio/ (outside venv) so pip upgrade won't delete it.
+# 3. Pre-generate station-mode caches for 32x10 variant.
+#    Flasher applies sed modifications (update_interval: 1s, and optionally
+#    ina219->ina226 + version 1.0 for v1.0 boards). We pre-build caches
+#    for BOTH variants so flasher just swaps in the right .cache.pkl file.
+#    Stored in ~/.cache/boneio/ (outside venv) so pip upgrade won't delete them.
 dir_32x10 = os.path.join(example_base, \"32x10\")
 if os.path.isdir(dir_32x10):
-    tmp_v1 = \"/tmp/boneio_32x10_v1.0\"
-    if os.path.exists(tmp_v1):
-        shutil.rmtree(tmp_v1)
-    shutil.copytree(dir_32x10, tmp_v1)
-    cfg_v1 = os.path.join(tmp_v1, \"config.yaml\")
-    # Apply v1.0 modifications
-    with open(cfg_v1) as f:
-        content = f.read()
-    content = content.replace(\"version: 0.8\", \"version: 1.0\")
-    content = content.replace(\"ina219:\", \"ina226:\")
-    with open(cfg_v1, \"w\") as f:
-        f.write(content)
-    try:
-        y.load_config_from_file(cfg_v1)
-        v1_cache = cfg_v1 + \".cache.pkl\"
-        if os.path.exists(v1_cache):
-            cache_dir = os.path.expanduser(\"~/.cache/boneio\")
-            os.makedirs(cache_dir, exist_ok=True)
-            dest = os.path.join(cache_dir, \"32x10_v1.0_config.cache.pkl\")
-            shutil.copy2(v1_cache, dest)
-            print(f\"   Cached v1.0: {dest}\")
-    except Exception as e:
-        print(f\"   Warning: failed to cache v1.0 variant: {e}\")
-    shutil.rmtree(tmp_v1, ignore_errors=True)
+    cache_dir = os.path.expanduser(\"~/.cache/boneio\")
+    os.makedirs(cache_dir, exist_ok=True)
+
+    # Helper: create temp copy, apply modifications, cache it
+    def _build_station_cache(label, replacements, cache_filename):
+        tmp_dir = f\"/tmp/boneio_station_{label}\"
+        if os.path.exists(tmp_dir):
+            shutil.rmtree(tmp_dir)
+        shutil.copytree(dir_32x10, tmp_dir)
+        cfg = os.path.join(tmp_dir, \"config.yaml\")
+        with open(cfg) as f:
+            content = f.read()
+        for old, new in replacements:
+            content = content.replace(old, new)
+        with open(cfg, \"w\") as f:
+            f.write(content)
+        try:
+            y.load_config_from_file(cfg)
+            pkl = cfg + \".cache.pkl\"
+            if os.path.exists(pkl):
+                dest = os.path.join(cache_dir, cache_filename)
+                shutil.copy2(pkl, dest)
+                print(f\"   Cached {label}: {dest}\")
+        except Exception as e:
+            print(f\"   Warning: failed to cache {label}: {e}\")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    # 3a. Station v0.8: add update_interval: 1s
+    _build_station_cache(\"station_v0.8\", [
+        (\"- address: 0x40\", \"- address: 0x40\\n    update_interval: 1s\"),
+    ], \"32x10_station_v0.8_config.cache.pkl\")
+
+    # 3b. Station v1.0: add update_interval: 1s + ina226 + version 1.0
+    _build_station_cache(\"station_v1.0\", [
+        (\"- address: 0x40\", \"- address: 0x40\\n    update_interval: 1s\"),
+        (\"version: 0.8\", \"version: 1.0\"),
+        (\"ina219:\", \"ina226:\"),
+    ], \"32x10_station_v1.0_config.cache.pkl\")
 
 # 4. If /home/boneio/boneio/config.yaml is present, warm it as well
 main_cfg = \"${BONEIO_HOME}/boneio/config.yaml\"

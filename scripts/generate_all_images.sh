@@ -228,13 +228,13 @@ apply_device_config() {
         return 1
     fi
     
-    # 1. Check /home/boneio/.cache/boneio_configs inside the mounted image
+    # 1. Check repo configs/ directory (has latest YAMLs + pre-generated .cache.pkl)
     local example_dir=""
-    if [ -d "$MOUNT_POINT/home/boneio/.cache/boneio_configs/$device_name" ]; then
-        example_dir="$MOUNT_POINT/home/boneio/.cache/boneio_configs/$device_name"
-    # 2. Check repo configs/ directory
-    elif [ -d "$SCRIPT_DIR/../configs/$device_name" ]; then
+    if [ -d "$SCRIPT_DIR/../configs/$device_name" ]; then
         example_dir="$SCRIPT_DIR/../configs/$device_name"
+    # 2. Check /home/boneio/.cache/boneio_configs inside the mounted image
+    elif [ -d "$MOUNT_POINT/home/boneio/.cache/boneio_configs/$device_name" ]; then
+        example_dir="$MOUNT_POINT/home/boneio/.cache/boneio_configs/$device_name"
     # 3. Fallback to venv example_config
     else
         for site_pkg in "$MOUNT_POINT"/home/boneio/boneio/venv/lib/python*/site-packages/boneio/example_config; do

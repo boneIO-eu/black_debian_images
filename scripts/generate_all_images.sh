@@ -394,7 +394,9 @@ create_emmc_flasher() {
     cp "$emmc_payload" "$MOUNT_POINT/boneio-emmc.img"
     rm -f "$emmc_payload"
     
-    # Disable bbbio-set-sysconf on the SD card rootfs so it never triggers a reboot in station mode
+    # Pre-generate SSH host keys on the PC for the flasher SD card (takes 0.01s on PC)
+    # and disable bbbio-set-sysconf so it boots into station mode instantly with zero delay.
+    ssh-keygen -A -f "$MOUNT_POINT" 2>/dev/null || true
     rm -f "$MOUNT_POINT/etc/bbb.io/ssh_regenerate" 2>/dev/null || true
     rm -f "$MOUNT_POINT/etc/systemd/system/multi-user.target.wants/bbbio-set-sysconf.service" 2>/dev/null || true
     rm -f "$MOUNT_POINT/lib/systemd/system/multi-user.target.wants/bbbio-set-sysconf.service" 2>/dev/null || true

@@ -112,6 +112,11 @@ fi
 MOUNT_POINT="/mnt/boneio_image"
 mkdir -p "$MOUNT_POINT"
 
+# Loop devices — tracked globally so the EXIT trap can always detach them,
+# even if a command fails mid-function under `set -e`.
+LOOP_DEVICE=""
+FLASHER_LOOP=""
+
 # Device types to generate (in order: 32x10 first)
 DEVICE_TYPES=(
     "32x10"
@@ -344,6 +349,7 @@ create_emmc_flasher() {
     if [ -z "$rootfs_part" ]; then
         print_error "Could not find rootfs partition in flasher image!"
         losetup -d "$FLASHER_LOOP"
+        FLASHER_LOOP=""
         rm -f "$flasher_name"
         rm -f "$emmc_payload"
         return 1
@@ -415,7 +421,8 @@ create_emmc_flasher() {
     umount "$MOUNT_POINT"
     MOUNT_POINT="$saved_mount_point"
     losetup -d "$FLASHER_LOOP"
-    
+    FLASHER_LOOP=""
+
     # Compress flasher image
     print_info "Compressing flasher image with xz..."
     xz -9f -T0 -v "$flasher_name"
@@ -493,6 +500,10 @@ cleanup() {
     print_warning "Cleaning up..."
     unmount_image
     umount /tmp/flasher_rootfs 2>/dev/null || true
+    if [ -n "$FLASHER_LOOP" ]; then
+        losetup -d "$FLASHER_LOOP" 2>/dev/null || true
+        FLASHER_LOOP=""
+    fi
     rm -f /tmp/boneio_emmc_payload.img
 }
 
@@ -517,7 +528,8 @@ echo ""
 APP_BLACK_DIR="$(realpath "$SCRIPT_DIR/../../app_black" 2>/dev/null || echo "")"
 if command -v uv >/dev/null 2>&1 && [ -n "$APP_BLACK_DIR" ] && [ -d "$APP_BLACK_DIR" ]; then
     print_info "Refreshing config caches with uv and app_black..."
-    (
+    CACHE_REFRESH_LOG="$(mktemp)"
+    if (
         cd "$APP_BLACK_DIR"
         uv run python -c "
 import os, sys
@@ -525,15 +537,25 @@ sys.path.insert(0, os.getcwd())
 import boneio.core.config.yaml_util as y
 
 base_dir = '$SCRIPT_DIR/../configs'
+failed = []
 for variant in ['32x10', '24x16', 'cover', 'cover_mix', 'tester']:
     cfg = os.path.join(base_dir, variant, 'config.yaml')
     if os.path.isfile(cfg):
         try:
             y.load_config_from_file(cfg)
-        except Exception:
-            pass
-" 2>/dev/null || true
-    )
+        except Exception as e:
+            failed.append(variant)
+            print(f'[cache-refresh] FAILED for {variant}: {e}', file=sys.stderr)
+if failed:
+    sys.exit(1)
+"
+    ) >"$CACHE_REFRESH_LOG" 2>&1; then
+        print_info "Config caches refreshed successfully."
+    else
+        print_warning "Config cache refresh failed (or partially failed) — falling back to the committed .cache.pkl files. Details:"
+        sed 's/^/    /' "$CACHE_REFRESH_LOG"
+    fi
+    rm -f "$CACHE_REFRESH_LOG"
 fi
 
 # Process each device type in defined order (32x10 first)

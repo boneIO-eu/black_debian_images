@@ -13,7 +13,22 @@ Narzędzia do budowy i flashowania obrazów Debian dla BoneIO Black (BeagleBone 
 - PC z Linux (Ubuntu/Debian)
 - Karta microSD (min. 8GB)
 - BeagleBone Black z Debian 13
-- `pishrink.sh` — [github.com/Drewsif/PiShrink](https://github.com/Drewsif/PiShrink)
+
+### Krok 0: Przygotowanie PC (jednorazowo)
+
+Skrypty budujące obrazy (`generate_all_images.sh`, `create_rootfs_img.sh`,
+`create_flasher_sd.sh`, `build_image_usb.sh`) potrzebują na PC: `util-linux`
+(`losetup`, `partprobe`, `blkid`, `sfdisk`), `parted`, `cloud-guest-utils`
+(`growpart`), `e2fsprogs`, `xz-utils`, opcjonalnie `uv` (auto-refresh cache
+configów z `app_black`) oraz `pishrink.sh`.
+
+```bash
+sudo ./scripts/setup_pc.sh
+```
+
+Skrypt instaluje wszystkie powyższe (apt) i wypisuje raport co się udało.
+Wymaga systemu opartego o `apt` (Ubuntu/Debian). Jeśli chcesz korzystać
+z auto-refresh cache configów, sklonuj `app_black` obok tego repo (`../app_black`).
 
 ### Krok 1: Przygotowanie bazowego systemu (na BBB)
 
@@ -73,6 +88,7 @@ sudo ./scripts/create_flasher_sd.sh /dev/sdX rootfs.img
 
 | Plik | Opis |
 |------|------|
+| `scripts/setup_pc.sh` | Instaluje zależności budowania obrazów na PC (jednorazowo) |
 | `scripts/setup_boneio.sh` | Główny skrypt konfiguracji systemu (uruchamiany na BBB) |
 | `scripts/create_rootfs_img.sh` | Tworzenie `.img` z karty SD (`dd` + `pishrink`) |
 | `scripts/create_flasher_sd.sh` | Przygotowanie karty SD jako flasher eMMC |

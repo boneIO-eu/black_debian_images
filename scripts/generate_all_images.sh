@@ -513,6 +513,29 @@ if [ -n "$ONLY_DEVICE" ]; then
 fi
 echo ""
 
+# Auto-refresh config caches on host PC if app_black is available
+APP_BLACK_DIR="$(realpath "$SCRIPT_DIR/../../app_black" 2>/dev/null || echo "")"
+if command -v uv >/dev/null 2>&1 && [ -n "$APP_BLACK_DIR" ] && [ -d "$APP_BLACK_DIR" ]; then
+    print_info "Refreshing config caches with uv and app_black..."
+    (
+        cd "$APP_BLACK_DIR"
+        uv run python -c "
+import os, sys
+sys.path.insert(0, os.getcwd())
+import boneio.core.config.yaml_util as y
+
+base_dir = '$SCRIPT_DIR/../configs'
+for variant in ['32x10', '24x16', 'cover', 'cover_mix', 'tester']:
+    cfg = os.path.join(base_dir, variant, 'config.yaml')
+    if os.path.isfile(cfg):
+        try:
+            y.load_config_from_file(cfg)
+        except Exception:
+            pass
+" 2>/dev/null || true
+    )
+fi
+
 # Process each device type in defined order (32x10 first)
 for device_name in "${DEVICE_TYPES[@]}"; do
     # Skip devices not matching --only filter

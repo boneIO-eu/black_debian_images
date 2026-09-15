@@ -398,11 +398,17 @@ else
     systemctl stop mosquitto 2>/dev/null || true
     rm -f /var/lib/mosquitto/mosquitto.db /var/lib/mosquitto/*.db
     touch /etc/mosquitto/passwd
-    chown root:root /etc/mosquitto/passwd
-    chmod 0644 /etc/mosquitto/passwd
     mosquitto_passwd -b /etc/mosquitto/passwd boneio boneio123
     mosquitto_passwd -b /etc/mosquitto/passwd homeassistant boneio123
     mosquitto_passwd -b /etc/mosquitto/passwd mqtt boneio123
+    # After the writes, not before: mosquitto_passwd rewrites the file and its
+    # own choice of mode would otherwise be the one that survives.
+    #
+    # 0640 root:mosquitto, not 0644. The broker runs as mosquitto and reads the
+    # file through the group; world-read let every local account take the
+    # hashes for an offline crack (F-11).
+    chown root:mosquitto /etc/mosquitto/passwd
+    chmod 0640 /etc/mosquitto/passwd
     step_mark "step6_mosquitto"
     log_info "   Mosquitto passwd bootstrapped (config applied by migration)"
 fi
@@ -697,7 +703,7 @@ if [ -n "$CURRENT_OVERLAY" ]; then
         log_info "   Overlay: preserving existing ${BONEIO_OVERLAY}"
     fi
 else
-    BONEIO_OVERLAY="${BONEIO_OVERLAY:-BONEIO-BLACK-PINS-v0.4-v0.8.dtbo}"
+    BONEIO_OVERLAY="${BONEIO_OVERLAY:-BONEIO-BLACK-PINS-v1.0.dtbo}"
     log_info "   Overlay: none declared, defaulting to ${BONEIO_OVERLAY}"
 fi
 

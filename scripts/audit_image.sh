@@ -2,9 +2,8 @@
 #
 # audit_image.sh — report what a boneIO Black image actually ships.
 #
-# The pentest findings that remain open are image-side (F-04, F-05, F-10, and
-# SSH throttling), and none of them can be settled by reading the build
-# scripts: the production path may differ from the USB bring-up path, and a
+# Most of what remains open is image-side (F-04, F-05, F-10 and SSH
+# throttling), and none of it can be settled by reading the build scripts: the production path may differ from the USB bring-up path, and a
 # device that has been upgraded is not the same as one freshly flashed. So
 # this asks the running system instead.
 #
@@ -452,6 +451,71 @@ web.auth.allow_anonymous is set." ;;
     esac
 }
 
+check_api_docs() {
+    local title="Interactive API docs"
+    if ! command -v curl >/dev/null 2>&1; then
+        record UNKNOWN "F-02" "$title" "curl is not installed."
+        return
+    fi
+
+    # AuthMiddleware only gates paths under /api, so these three sit outside it
+    # and cannot be protected — they have to be absent. openapi.json is the one
+    # that matters: it is a complete map of every route, parameter and schema.
+    local open=""
+    local path code
+    for path in /docs /redoc /openapi.json; do
+        code="$(curl -s -m 6 -o /dev/null -w '%{http_code}' \
+            "http://127.0.0.1:${WEB_PORT}${path}" 2>/dev/null)"
+        [[ "$code" == "200" ]] && open="${open}${open:+, }${path}"
+    done
+
+    if [[ -n "$open" ]]; then
+        record FAIL "F-02" "$title" \
+            "Served without a token: ${open}. Anyone on the network gets the full API \
+surface. Fixed by docs_url/redoc_url/openapi_url=None in webui/app.py; BONEIO_DEV \
+restores them on purpose, so check the development-mode row too."
+    else
+        record PASS "F-02" "$title" "/docs, /redoc and /openapi.json do not answer."
+    fi
+}
+
+check_serial_disclosure() {
+    local title="Serial number in unauthenticated replies"
+    if ! command -v curl >/dev/null 2>&1; then
+        record UNKNOWN "F-03" "$title" "curl is not installed."
+        return
+    fi
+
+    # /api/version and /api/init answer without a token by design — the panel
+    # needs them to decide whether to show a login form — but the serial
+    # identifies the unit and feeds its cloud subdomain and MQTT topics.
+    local anon
+    anon="$(curl -s -m 6 -o /dev/null -w '%{http_code}' \
+        "http://127.0.0.1:${WEB_PORT}/api/outputs" 2>/dev/null)"
+    if [[ "$anon" == "200" ]]; then
+        record UNKNOWN "F-03" "$title" \
+            "Not meaningful here: the whole API answers anonymously, so the serial is the \
+least of it. See the row above about anonymous callers."
+        return
+    fi
+
+    local leaking=""
+    local path body
+    for path in /api/version /api/init; do
+        body="$(curl -s -m 6 "http://127.0.0.1:${WEB_PORT}${path}" 2>/dev/null)"
+        grep -q '"serial_no"' <<<"$body" && leaking="${leaking}${leaking:+, }${path}"
+    done
+
+    if [[ -n "$leaking" ]]; then
+        record FAIL "F-03" "$title" \
+            "Returned without a token by: ${leaking}. The serial should reach signed-in \
+callers only."
+    else
+        record PASS "F-03" "$title" \
+            "/api/version and /api/init withhold serial_no from anonymous callers."
+    fi
+}
+
 check_dev_mode() {
     local title="Development mode"
     if grep -rqs 'BONEIO_DEV' /etc/systemd/system/boneio.service /etc/systemd/system/boneio.service.d/ 2>/dev/null; then
@@ -479,6 +543,8 @@ check_sshd
 check_ssh_throttling
 check_account_store
 check_api_requires_auth
+check_api_docs
+check_serial_disclosure
 check_dev_mode
 
 if [[ $JSON -eq 1 ]]; then

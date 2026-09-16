@@ -80,6 +80,20 @@ find /var/log -type f -exec truncate -s 0 {} \;
 rm -rf /tmp/*
 rm -rf /var/tmp/*
 
+# Drop the build-time sudo rule and expire the shipped password (F-04).
+#
+# setup_boneio.sh does this too, in its own sealing step. Repeated here because
+# this script is the standalone way to seal an image, and an image sealed only
+# this way would otherwise ship with 'boneio ALL=(ALL) NOPASSWD: ALL' left
+# behind by build_image_usb.sh.
+if [ -e /etc/sudoers.d/boneio-setup ]; then
+    rm -f /etc/sudoers.d/boneio-setup
+    echo "   Removed the build-time NOPASSWD sudo rule"
+fi
+if id boneio >/dev/null 2>&1; then
+    chage -d 0 boneio 2>/dev/null && echo "   boneio must set a new password at first login"
+fi
+
 # Clear Caddy certificates (so new device generates fresh certs with correct hostname)
 CADDY_DATA_DIR="/home/boneio/docker/nodered/caddy/data"
 CADDY_CONFIG_DIR="/home/boneio/docker/nodered/caddy/config"

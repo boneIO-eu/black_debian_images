@@ -168,12 +168,60 @@ if step_done "step1_ufw"; then
     log_skip "1/12: UFW firewall (already configured)"
 else
     log_info "1/12: Configuring UFW firewall..."
+    # These rules are staged, not active: nothing here runs 'ufw enable', so
+    # the device ships with no firewall. Left as is on purpose — turning a
+    # default-deny firewall on unattended, over the network, is how a remote
+    # controller becomes a brick.
+    #
+    # 22 and 8443 are in the list for exactly that reason. Without them, the
+    # first person to run 'ufw enable' loses SSH and the TLS panel in the same
+    # second, with only the plain-HTTP ports still answering.
+    ufw allow 22    # SSH — or enabling the firewall locks the operator out
     ufw allow 1883  # MQTT
-    ufw allow 8090  # BoneIO Web
-    ufw allow 8091  # Nginx proxy
+    ufw allow 8090  # boneIO web panel
+    ufw allow 8091  # Caddy, plain HTTP
+    ufw allow 8443  # Caddy, TLS — the port the panel should be reached on
     ufw logging off
     step_mark "step1_ufw"
-    log_info "   UFW configured"
+    log_info "   UFW rules staged (firewall is NOT enabled — 'ufw status' says inactive)"
+fi
+
+# =============================================================================
+# STEP 1b: SSH login hardening
+# =============================================================================
+if step_done "step1b_sshd"; then
+    log_skip "1b/12: SSH hardening (already applied)"
+else
+    log_info "1b/12: Hardening SSH logins..."
+
+    # The web login has been throttled since 1.6; SSH was left on the stock
+    # settings, so guessing was bounded only by patience. This does not lock
+    # anyone out — key auth and password auth both keep working, there are
+    # just fewer attempts per connection and less time to make them.
+    SSHD_DROPIN="/etc/ssh/sshd_config.d/10-boneio-hardening.conf"
+    mkdir -p /etc/ssh/sshd_config.d
+    cat > "${SSHD_DROPIN}" <<'SSHD_EOF'
+# boneIO login hardening. Managed by setup_boneio.sh — edit at your own risk.
+# Three guesses per connection instead of six, and a shorter window to make
+# them in. Root has no reason to log in over SSH on this device.
+MaxAuthTries 3
+LoginGraceTime 20
+PermitRootLogin no
+SSHD_EOF
+    chmod 0644 "${SSHD_DROPIN}"
+
+    # Validate before reloading. A config sshd refuses to parse would take the
+    # daemon down on restart, and on a device reached only over the network
+    # that is unrecoverable without a serial console.
+    if sshd -t 2>/dev/null; then
+        systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
+        step_mark "step1b_sshd"
+        log_info "   SSH hardened (MaxAuthTries 3, LoginGraceTime 20, no root login)"
+    else
+        rm -f "${SSHD_DROPIN}"
+        log_warn "   sshd rejected the hardening drop-in; reverted and left SSH untouched"
+        sshd -t 2>&1 | sed 's/^/     /' || true
+    fi
 fi
 
 # =============================================================================
@@ -398,9 +446,40 @@ else
     systemctl stop mosquitto 2>/dev/null || true
     rm -f /var/lib/mosquitto/mosquitto.db /var/lib/mosquitto/*.db
     touch /etc/mosquitto/passwd
-    mosquitto_passwd -b /etc/mosquitto/passwd boneio boneio123
-    mosquitto_passwd -b /etc/mosquitto/passwd homeassistant boneio123
-    mosquitto_passwd -b /etc/mosquitto/passwd mqtt boneio123
+
+    # One password per device, not one per product line (F-05).
+    #
+    # 'boneio123' was identical on every unit ever shipped and documented in
+    # UPDATE.md, so knowing one device's broker meant knowing all of them.
+    #
+    # Only accounts that do not exist yet are created. This step re-runs on a
+    # live device — step markers expire after 24h — and the previous version
+    # rewrote all three passwords back to the shared default every time,
+    # silently undoing whatever the owner had set. Creating only what is
+    # missing makes the step safe to repeat.
+    #
+    # 'homeassistant' and 'mqtt' exist for the owner's integrations and get
+    # random values they are meant to replace; the panel can set all three
+    # without a sudo password (see /etc/sudoers.d/boneio), so nothing is lost
+    # by not knowing them.
+    for mqtt_account in boneio homeassistant mqtt; do
+        if grep -q "^${mqtt_account}:" /etc/mosquitto/passwd 2>/dev/null; then
+            log_info "   MQTT account '${mqtt_account}' already exists, left alone"
+            continue
+        fi
+        mqtt_generated="$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-24)"
+        mosquitto_passwd -b /etc/mosquitto/passwd "${mqtt_account}" "${mqtt_generated}"
+        if [ "${mqtt_account}" = "boneio" ]; then
+            # The app's own account: kept so the config step below can point
+            # mqtt.yaml at it, possibly in a later invocation. Root-only, since
+            # it is the cleartext the app will authenticate with.
+            install -d -m 0700 /etc/boneio
+            printf '%s\n' "${mqtt_generated}" > /etc/boneio/mqtt-boneio.pass
+            chmod 0600 /etc/boneio/mqtt-boneio.pass
+        fi
+        log_info "   MQTT account '${mqtt_account}' created with a per-device password"
+    done
+    unset mqtt_generated
     # After the writes, not before: mosquitto_passwd rewrites the file and its
     # own choice of mode would otherwise be the one that survives.
     #
@@ -410,7 +489,8 @@ else
     chown root:mosquitto /etc/mosquitto/passwd
     chmod 0640 /etc/mosquitto/passwd
     step_mark "step6_mosquitto"
-    log_info "   Mosquitto passwd bootstrapped (config applied by migration)"
+    log_warn "   Newly created MQTT accounts have random passwords — set your own in"
+    log_warn "   the panel (Settings -> MQTT passwords) before pointing HA at them."
 fi
 
 # Steps 7-8 (journald, sudoers, OLED, systemd services) are applied below
@@ -471,6 +551,52 @@ rm -f ${BONEIO_HOME}/boneio/__init__.py 2>/dev/null || true
 rm -rf ${BONEIO_HOME}/boneio/__pycache__ 2>/dev/null || true
 if [ -d "${BONEIO_HOME}/.cache/boneio_configs/32x10" ]; then
     cp ${BONEIO_HOME}/.cache/boneio_configs/32x10/*.yaml ${BONEIO_HOME}/boneio/ 2>/dev/null || true
+fi
+
+# Point the app config at this device's broker password.
+#
+# Deliberately keyed on the literal default: the substitution only fires where
+# a config still says 'boneio123'. A device whose owner has already set their
+# own password is left alone, which is what makes this safe to re-run and safe
+# on a device that has been in service for a year.
+#
+# Both the live config and the cached per-variant copies are updated, so
+# switching board type later does not reintroduce the shipped default.
+# Which configs still carry the shipped default? Asked first, because the
+# answer decides whether anything may be touched at all.
+MQTT_STALE_CONFIGS=()
+for mqtt_cfg in ${BONEIO_HOME}/boneio/mqtt.yaml \
+                ${BONEIO_HOME}/.cache/boneio_configs/*/mqtt.yaml; do
+    [ -f "$mqtt_cfg" ] || continue
+    grep -q '^password: boneio123$' "$mqtt_cfg" && MQTT_STALE_CONFIGS+=("$mqtt_cfg")
+done
+
+if [ ${#MQTT_STALE_CONFIGS[@]} -eq 0 ]; then
+    log_info "   No mqtt.yaml carries the shipped default — broker credentials left alone"
+else
+    # Order matters here. An earlier version generated a password first and
+    # substituted afterwards, which meant a device whose owner had already set
+    # their own password got the broker rotated while the config kept the old
+    # value — the app would come back up unable to reach its own broker. So
+    # nothing is rotated unless a config is demonstrably still on the default.
+    if [ -s /etc/boneio/mqtt-boneio.pass ]; then
+        MQTT_BONEIO_PASS="$(cat /etc/boneio/mqtt-boneio.pass)"
+    else
+        # Bootstrapped by an older build, so the broker still holds the shared
+        # default for this account. Rotate it — we own both of its sides.
+        MQTT_BONEIO_PASS="$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-24)"
+        install -d -m 0700 /etc/boneio
+        printf '%s\n' "${MQTT_BONEIO_PASS}" > /etc/boneio/mqtt-boneio.pass
+        chmod 0600 /etc/boneio/mqtt-boneio.pass
+        mosquitto_passwd -b /etc/mosquitto/passwd boneio "${MQTT_BONEIO_PASS}"
+        systemctl reload mosquitto 2>/dev/null || true
+        log_info "   Rotated the broker's 'boneio' password away from the shipped default"
+    fi
+
+    for mqtt_cfg in "${MQTT_STALE_CONFIGS[@]}"; do
+        sed -i "s|^password: boneio123$|password: ${MQTT_BONEIO_PASS}|" "$mqtt_cfg"
+    done
+    log_info "   Pointed ${#MQTT_STALE_CONFIGS[@]} mqtt.yaml file(s) at this device's password"
 fi
 
 chown -R ${BONEIO_USER}:${BONEIO_USER} ${BONEIO_HOME}/boneio
@@ -829,6 +955,38 @@ rm -rf /var/tmp/*
 # Clear mosquitto retained messages (boneio may have published during setup)
 systemctl stop mosquitto 2>/dev/null || true
 rm -f /var/lib/mosquitto/mosquitto.db /var/lib/mosquitto/*.db
+
+# Drop the build-time sudo rule (F-04).
+#
+# build_image_usb.sh writes '${BONEIO_USER} ALL=(ALL) NOPASSWD: ALL' to
+# /etc/sudoers.d/boneio-setup so the unattended setup can run, and until now
+# nothing took it away again — every shipped image granted the service account
+# full root with no credential at all. It has done its job by this point.
+#
+# Only in the sealing path: this whole step is skipped under --no-cleanup, so a
+# device in service never has its sudo configuration changed underneath it.
+if [ -e /etc/sudoers.d/boneio-setup ]; then
+    rm -f /etc/sudoers.d/boneio-setup
+    log_info "   Removed the build-time NOPASSWD sudo rule"
+fi
+
+# Force a password change on the first interactive login.
+#
+# The image ships a password shared by every unit ('Black'), which is the part
+# of F-04 that cannot be fixed by tightening sudo: it is the credential, not
+# the privilege. Expiring it means a device that is actually logged into stops
+# holding the shipped password, and any automation still using it fails loudly
+# rather than quietly working forever.
+#
+# This is a mitigation, not a cure — see SECURITY notes in the README: someone
+# who knows 'Black' can still log in once and set their own. Closing it fully
+# means shipping no usable password (keys only, or a per-device secret), which
+# is a product decision about how support reaches a customer's device.
+if id "${BONEIO_USER}" >/dev/null 2>&1; then
+    chage -d 0 "${BONEIO_USER}" 2>/dev/null \
+        && log_info "   ${BONEIO_USER} must set a new password at first login" \
+        || log_warn "   Could not expire the ${BONEIO_USER} password"
+fi
 
 # Clear bash history
 history -c

@@ -110,12 +110,26 @@ check_ssh_password_state() {
             ;;
         P|PS)
             # The method prefix says how it is hashed, never the hash itself.
-            local method
+            local method expired
             method="$(awk -F: -v u="$BONEIO_USER" '$1==u {print $2}' /etc/shadow 2>/dev/null | cut -d'$' -f2)"
-            record FAIL "F-04" "$title" \
-                "A password is set (hash method \$${method:-?}\$). Target state is no password at all; \
-the image must not ship one. Confirm whether it is still the published default from a workstation: \
-sshpass -p 'Black' ssh -o PreferredAuthentications=password ${BONEIO_USER}@<device> true"
+            # Field 3 of /etc/shadow is the last-change day. 0 means expired,
+            # so the next interactive login has to set a new one — which is
+            # what the sealing step does. Worth distinguishing: a sealed image
+            # and one that quietly ships a usable shared password are not the
+            # same finding, even though both have a hash on disk.
+            expired="$(awk -F: -v u="$BONEIO_USER" '$1==u {print $3}' /etc/shadow 2>/dev/null)"
+            if [[ "$expired" == "0" ]]; then
+                record FAIL "F-04" "$title" \
+                    "A password is set (hash method \$${method:-?}\$) but expired, so the first \
+interactive login must replace it. That stops the shipped password persisting on a device in use; \
+it does not stop someone who knows it from logging in once and setting their own. Fully closing this \
+means shipping no usable password — keys only, or a per-device secret."
+            else
+                record FAIL "F-04" "$title" \
+                    "A password is set (hash method \$${method:-?}\$) and NOT expired, so it \
+survives untouched on every device that ships. Confirm whether it is still the published default from \
+a workstation: sshpass -p 'Black' ssh -o PreferredAuthentications=password ${BONEIO_USER}@<device> true"
+            fi
             ;;
         *)
             record UNKNOWN "F-04" "$title" "passwd -S said: ${state:-nothing}"
@@ -516,6 +530,51 @@ callers only."
     fi
 }
 
+check_firewall_state() {
+    local title="Firewall"
+    # Resolved by path, not command -v: ufw lives in /usr/sbin, which is not on
+    # a non-root user's PATH on Debian, and this script is often run unprivileged.
+    local ufw_bin=""
+    local candidate
+    for candidate in /usr/sbin/ufw /sbin/ufw "$(command -v ufw 2>/dev/null)"; do
+        [[ -n "$candidate" && -x "$candidate" ]] && { ufw_bin="$candidate"; break; }
+    done
+    if [[ -z "$ufw_bin" ]]; then
+        record UNKNOWN "F-10" "$title" "ufw is not installed."
+        return
+    fi
+    if [[ $IS_ROOT -eq 0 ]]; then
+        needs_root "F-10" "$title"
+        return
+    fi
+
+    local state
+    state="$("$ufw_bin" status 2>/dev/null | head -1)"
+    if [[ "$state" == *"inactive"* ]]; then
+        # setup_boneio.sh stages allow rules but never enables ufw, so this is
+        # the expected state. Reported rather than passed over: someone reading
+        # the rule list could reasonably think the device is filtered.
+        record UNKNOWN "F-10" "$title" \
+            "ufw is inactive — the allow rules staged by setup are not in force and nothing is \
+filtered. Enabling it is a deliberate choice; check that 22 and 8443 are in the rule list first."
+    elif [[ "$state" == *"active"* ]]; then
+        local missing=""
+        local port
+        for port in 22 8443; do
+            "$ufw_bin" status 2>/dev/null | grep -qE "^${port}[[:space:]/]" || missing="${missing}${missing:+, }${port}"
+        done
+        if [[ -n "$missing" ]]; then
+            record FAIL "F-10" "$title" \
+                "ufw is active but does not allow: ${missing}. Losing 22 means losing the only way \
+back in; losing 8443 means losing the TLS panel."
+        else
+            record PASS "F-10" "$title" "ufw is active and allows 22 and 8443."
+        fi
+    else
+        record UNKNOWN "F-10" "$title" "ufw status said: ${state:-nothing}"
+    fi
+}
+
 check_dev_mode() {
     local title="Development mode"
     if grep -rqs 'BONEIO_DEV' /etc/systemd/system/boneio.service /etc/systemd/system/boneio.service.d/ 2>/dev/null; then
@@ -536,6 +595,7 @@ check_docker_group
 check_full_sudo
 check_mqtt_default_password
 check_mosquitto_passwd_perms
+check_firewall_state
 check_exposed_ports
 check_plaintext_panel
 check_certificate_lifetime

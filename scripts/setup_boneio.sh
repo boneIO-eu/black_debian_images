@@ -589,6 +589,11 @@ else
         printf '%s\n' "${MQTT_BONEIO_PASS}" > /etc/boneio/mqtt-boneio.pass
         chmod 0600 /etc/boneio/mqtt-boneio.pass
         mosquitto_passwd -b /etc/mosquitto/passwd boneio "${MQTT_BONEIO_PASS}"
+        # mosquitto_passwd rewrites the file and picks its own mode, so the
+        # F-11 permissions have to be re-applied after every write to it — not
+        # just after the bootstrap in step 6.
+        chown root:mosquitto /etc/mosquitto/passwd
+        chmod 0640 /etc/mosquitto/passwd
         systemctl reload mosquitto 2>/dev/null || true
         log_info "   Rotated the broker's 'boneio' password away from the shipped default"
     fi

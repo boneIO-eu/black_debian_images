@@ -9,3 +9,10 @@ scripts/test_*.sh
 
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/
+
+# AI working plans — local scratch, not committed. See AGENTS.md.
+.ai-plans/
+
+# Local pointer so Claude Code picks up AGENTS.md; the rules themselves are
+# in AGENTS.md, which is tracked.
+CLAUDE.md

@@ -39,3 +39,16 @@ re-read whole files.
 After big code changes, refresh the graph with `graft build` (deterministic,
 no API key, $0).
 <!-- graft:end -->
+
+## AI working plans → `.ai-plans/`
+
+Multi-step plans, investigations and design notes an agent produces go in
+`.ai-plans/` (one Markdown file per topic).
+
+- The directory is **git-ignored** — local scratch, not repo history. Do not
+  commit these and do not put them in a PR.
+- Write a plan here **before** starting the implementation it describes, and keep
+  it updated as the work lands.
+- Separate from **durable, shared docs** that belong in git (a roadmap, a
+  decision record). Those stay tracked at the repo root. Moving a note out of
+  `.ai-plans/` is a deliberate act.

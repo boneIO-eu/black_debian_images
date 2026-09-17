@@ -85,6 +85,216 @@ needs_root() {
     record UNKNOWN "$1" "$2" "Needs root. Re-run as: ${RERUN_HINT}"
 }
 
+# ------------------------------------------------- F-04 privileged helpers
+#
+# These six describe the posture the 1.6 migration chain is supposed to leave
+# behind. Without them the audit reports on the state of affairs before any of
+# it existed: the docker group and the blanket sudo rule would be flagged, and
+# everything meant to replace them would go unmentioned.
+
+#: Where the trust anchors are pinned, outside the application's reach.
+PINNED_DIR="/etc/boneio"
+HELPER_V2="/usr/sbin/boneio-migrate-v2"
+HELPER_LEGACY="/usr/sbin/boneio-migrate"
+TRUSTED_DIR="/usr/lib/boneio/trusted"
+
+# Whether a path is a regular file owned by root and not writable by others.
+root_owned() {
+    local path="$1" stat_out
+    [ -f "$path" ] || return 1
+    [ -L "$path" ] && return 1
+    stat_out=$(stat -c '%u %a' "$path" 2>/dev/null) || return 1
+    local uid="${stat_out%% *}" mode="${stat_out##* }"
+    [ "$uid" = "0" ] || return 1
+    # No write bit for group, and none for other. Checked digit by digit
+    # rather than with a glob, because a glob over the whole mode cannot tell
+    # a group bit from an other bit and a 4-digit mode shifts the positions.
+    local group_digit="${mode: -2:1}" other_digit="${mode: -1:1}"
+    case "$group_digit" in
+        2|3|6|7) return 1 ;;
+    esac
+    case "$other_digit" in
+        2|3|6|7) return 1 ;;
+    esac
+    return 0
+}
+
+check_legacy_migration_helper() {
+    local title="Legacy migration helper removed"
+    if [ -e "$HELPER_LEGACY" ]; then
+        if [ -L "$HELPER_LEGACY" ]; then
+            record PASS "F-04" "$title" \
+                "'${HELPER_LEGACY}' is a symlink, which is how the retirement migration \
+keeps old call sites working. The protocol 1 code path is gone."
+        else
+            record FAIL "F-04" "$title" \
+                "'${HELPER_LEGACY}' is still a real file. It accepts a whole migration plan \
+over stdin — actions, asset digests and a validate_cmd it runs as root — so whoever holds the \
+'${BONEIO_USER}' account has root through a legitimate call (CVE-2026-77055). Migration 1.6.6 \
+removes it once boneio-migrate-v2 passes its selftest; if it is still here, either the \
+migrations have not run or the selftest is failing."
+        fi
+    else
+        record PASS "F-04" "$title" "'${HELPER_LEGACY}' is gone."
+    fi
+}
+
+check_signing_helper() {
+    local title="Signature-verifying migration helper"
+    if [ ! -x "$HELPER_V2" ]; then
+        record FAIL "F-04" "$title" \
+            "'${HELPER_V2}' is not installed, so migrations either do not run at all or still \
+go through the helper that trusts its caller. Migration 1.6.5 installs it."
+        return
+    fi
+    if [ "$(id -u)" -ne 0 ]; then
+        record UNKNOWN "F-04" "$title" \
+            "'${HELPER_V2}' is installed but its selftest needs root. Re-run as: ${RERUN_HINT}"
+        return
+    fi
+    local output
+    if output=$("$HELPER_V2" --selftest 2>&1); then
+        record PASS "F-04" "$title" \
+            "'${HELPER_V2}' is installed and its selftest passes: signature verification works \
+in both directions and both trust anchors are pinned."
+    else
+        record FAIL "F-04" "$title" \
+            "'${HELPER_V2}' is installed but its selftest fails, so the runner will keep using \
+the legacy helper and the hardening never completes. Output: $(printf '%s' "$output" | tail -3 | tr '\n' ' ')"
+    fi
+}
+
+check_trust_anchors() {
+    local title="Migration trust anchors"
+    local missing=() loose=()
+    local anchor
+    for anchor in migrations.pem migrations-recovery.pem; do
+        if [ ! -e "${PINNED_DIR}/${anchor}" ]; then
+            missing+=("$anchor")
+        elif ! root_owned "${PINNED_DIR}/${anchor}"; then
+            loose+=("$anchor")
+        fi
+    done
+    if [ ${#missing[@]} -eq 0 ] && [ ${#loose[@]} -eq 0 ]; then
+        record PASS "F-04" "$title" \
+            "Both anchors are pinned in ${PINNED_DIR} and root-owned. The recovery anchor is \
+what makes a lost release key survivable: re-pinning needs a migration signed by a key the \
+device already trusts."
+        return
+    fi
+    local detail=""
+    [ ${#missing[@]} -gt 0 ] && detail="missing: ${missing[*]}. "
+    [ ${#loose[@]} -gt 0 ] && detail="${detail}not root-owned: ${loose[*]}. "
+    record FAIL "F-04" "$title" \
+        "${detail}A missing release anchor means the helper refuses every migration; a missing \
+recovery anchor means a lost release key would leave this device unable to accept a signed \
+migration ever again. An anchor writable by anyone else is not an anchor."
+}
+
+check_dev_hatch() {
+    local title="Unsigned migrations hatch"
+    if [ -e "${PINNED_DIR}/allow-unsigned-migrations" ]; then
+        record FAIL "F-04" "$title" \
+            "'${PINNED_DIR}/allow-unsigned-migrations' exists, so the helper accepts a plan \
+handed to it over stdin. That is protocol 1 behaviour and reopens CVE-2026-77055 — it is a \
+development hatch and must not ship."
+    else
+        record PASS "F-04" "$title" "No unsigned-migration hatch present."
+    fi
+}
+
+check_helper_sudo_rules() {
+    local title="Helper sudo rules"
+    local fragment="/etc/sudoers.d/boneio-helpers"
+    if [ ! -e "$fragment" ]; then
+        record FAIL "F-04" "$title" \
+            "'${fragment}' is absent, so nothing can call the privileged helpers without a \
+password and the application falls back to the paths being removed."
+        return
+    fi
+    if [ "$(id -u)" -ne 0 ] && [ ! -r "$fragment" ]; then
+        record UNKNOWN "F-04" "$title" "Needs root to read ${fragment}. Re-run as: ${RERUN_HINT}"
+        return
+    fi
+    # Every NOPASSWD target in the fragment must be one of the three helpers.
+    local unexpected
+    unexpected=$(grep -v '^[[:space:]]*#' "$fragment" 2>/dev/null \
+        | grep -oE '/usr/sbin/[A-Za-z0-9_-]+' \
+        | grep -vE '^/usr/sbin/boneio-(migrate-v2|containers|system)$' || true)
+    if [ -n "$unexpected" ]; then
+        record FAIL "F-04" "$title" \
+            "'${fragment}' grants passwordless sudo to something other than the three \
+closed-vocabulary helpers: $(printf '%s' "$unexpected" | tr '\n' ' '). Each of those is a \
+separate path to root."
+        return
+    fi
+    if grep -qE 'install-helpers|reinstall' "$fragment" 2>/dev/null; then
+        record FAIL "F-04" "$title" \
+            "'${fragment}' contains a rule for reinstalling the helpers. A script that restores \
+the trust anchors lets an attacker re-pin their own key and sign every future plan; recovery is \
+supposed to go through boneio-helpers-heal.service and the root-owned pristine copy."
+        return
+    fi
+    record PASS "F-04" "$title" \
+        "'${fragment}' names only the three closed-vocabulary helpers, and there is no rule for \
+reinstalling them."
+}
+
+check_pristine_copy() {
+    local title="Pristine helper copy and self-heal"
+    if [ ! -d "$TRUSTED_DIR" ]; then
+        record FAIL "F-04" "$title" \
+            "'${TRUSTED_DIR}' does not exist, so boneio-helpers-heal.service has nothing to \
+restore from. A helper that goes missing then needs a console or a reflash."
+        return
+    fi
+    local missing=()
+    local name
+    for name in boneio-migrate-v2 boneio-containers boneio-system \
+                sudoers-boneio-helpers migrations.pem migrations-recovery.pem; do
+        root_owned "${TRUSTED_DIR}/${name}" || missing+=("$name")
+    done
+    local unit_state="unknown"
+    if command -v systemctl >/dev/null 2>&1; then
+        unit_state=$(systemctl is-enabled boneio-helpers-heal.service 2>/dev/null || echo "not-enabled")
+    fi
+    if [ ${#missing[@]} -gt 0 ]; then
+        record FAIL "F-04" "$title" \
+            "Missing or not root-owned in ${TRUSTED_DIR}: ${missing[*]}. The heal unit refuses \
+to restore a partial trust chain, so this is the state that needs a console."
+    elif [ "$unit_state" != "enabled" ]; then
+        record FAIL "F-04" "$title" \
+            "The pristine copy is complete but boneio-helpers-heal.service is '${unit_state}'. \
+Nothing will restore the helpers at boot, and the recovery path deliberately does not go \
+through the ${BONEIO_USER} account."
+    else
+        record PASS "F-04" "$title" \
+            "'${TRUSTED_DIR}' is complete and root-owned, and boneio-helpers-heal.service is \
+enabled."
+    fi
+}
+
+check_compose_ownership() {
+    local title="Compose file ownership"
+    local compose
+    compose=$(eval echo "~${BONEIO_USER}")/docker/nodered/docker-compose.yaml
+    if [ ! -e "$compose" ]; then
+        record PASS "F-04" "$title" "No compose project at ${compose}."
+        return
+    fi
+    if root_owned "$compose"; then
+        record PASS "F-04" "$title" \
+            "'${compose}' is root-owned. That file is what 'docker compose up' executes, so \
+being able to write it is being able to run a container as root with the host filesystem \
+mounted — which is why routing the commands through a helper is not enough on its own."
+    else
+        record FAIL "F-04" "$title" \
+            "'${compose}' is writable by someone other than root: $(stat -c '%U:%G %a' "$compose" 2>/dev/null). \
+Whoever can write it can start a container as root with the host filesystem mounted, no matter \
+how narrow the sudo rule on docker is. Migration 1.6.5 takes it to root:root 0644."
+    fi
+}
+
 # ------------------------------------------------------------ F-04 accounts
 
 check_ssh_password_state() {
@@ -590,6 +800,13 @@ dev servers. Correct on a development board, never on a shipped one."
 
 check_ssh_password_state
 check_blanket_nopasswd
+check_legacy_migration_helper
+check_signing_helper
+check_trust_anchors
+check_dev_hatch
+check_helper_sudo_rules
+check_pristine_copy
+check_compose_ownership
 check_setup_leftover
 check_docker_group
 check_full_sudo

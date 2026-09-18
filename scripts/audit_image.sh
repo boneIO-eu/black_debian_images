@@ -130,7 +130,7 @@ keeps old call sites working. The protocol 1 code path is gone."
             record FAIL "F-04" "$title" \
                 "'${HELPER_LEGACY}' is still a real file. It accepts a whole migration plan \
 over stdin — actions, asset digests and a validate_cmd it runs as root — so whoever holds the \
-'${BONEIO_USER}' account has root through a legitimate call (CVE-2026-77055). Migration 1.6.6 \
+'${BONEIO_USER}' account has root through a legitimate call. Migration 1.6.6 \
 removes it once boneio-migrate-v2 passes its selftest; if it is still here, either the \
 migrations have not run or the selftest is failing."
         fi
@@ -196,7 +196,7 @@ check_dev_hatch() {
     if [ -e "${PINNED_DIR}/allow-unsigned-migrations" ]; then
         record FAIL "F-04" "$title" \
             "'${PINNED_DIR}/allow-unsigned-migrations' exists, so the helper accepts a plan \
-handed to it over stdin. That is protocol 1 behaviour and reopens CVE-2026-77055 — it is a \
+handed to it over stdin. That is protocol 1 behaviour and reopens the escalation path — it is a \
 development hatch and must not ship."
     else
         record PASS "F-04" "$title" "No unsigned-migration hatch present."
@@ -388,13 +388,26 @@ account is already root."
 
 check_full_sudo() {
     local title="Unrestricted sudo"
-    local groups
-    groups="$(id -nG "$BONEIO_USER" 2>/dev/null)"
-    if echo "$groups" | tr ' ' '\n' | grep -qxE 'sudo|admin|wheel'; then
+    local groups unexpected
+    groups="$(id -nG "$BONEIO_USER" 2>/dev/null | tr ' ' '\n')"
+    # 'admin' is not ours. It comes from the stock BeagleBone image and carries
+    # a password-gated (ALL:ALL) ALL, which is how the operator gets a root
+    # shell over SSH on a controller in a cabinet. It is kept on purpose: it is
+    # gated by a password an attacker would already need, and removing it would
+    # leave a device whose only repair is a serial console or the SD card.
+    # 'sudo' and 'wheel' are a different matter — nothing here adds them, so
+    # finding one means something else did.
+    unexpected="$(echo "$groups" | grep -xE 'sudo|wheel' | paste -sd, -)"
+    if [[ -n "$unexpected" ]]; then
         record FAIL "F-04" "$title" \
-            "'${BONEIO_USER}' is in [$(echo "$groups" | tr ' ' '\n' | grep -xE 'sudo|admin|wheel' | paste -sd, -)], \
-so it may run any command (a password is still required). The service account running the web \
-app should hold only the narrow NOPASSWD rules it actually uses."
+            "'${BONEIO_USER}' is in [${unexpected}], so it may run any command. Nothing in the \
+boneIO image adds those groups; the service account running the web app should hold only the \
+narrow NOPASSWD rules it actually uses."
+    elif echo "$groups" | grep -qx admin; then
+        record PASS "F-04" "$title" \
+            "'${BONEIO_USER}' has no blanket NOPASSWD grant. It is in 'admin' from the stock \
+BeagleBone image, which is (ALL:ALL) ALL behind the account password — kept deliberately as the \
+operator's way back into a device, and not reachable without that password."
     else
         record PASS "F-04" "$title" "'${BONEIO_USER}' has no blanket sudo grant."
     fi

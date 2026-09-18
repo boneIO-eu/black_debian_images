@@ -253,7 +253,12 @@ else
         make \
         device-tree-compiler
 
-    usermod -aG docker ${BONEIO_USER}
+    # The boneio account is deliberately NOT put in the docker group. That
+    # group is root without a password and without a sudo rule: the daemon
+    # starts containers as root, so anyone who can reach its socket can ask
+    # for one with the host filesystem mounted. Container management goes
+    # through /usr/sbin/boneio-containers instead. The docker commands further
+    # down in this script run as root, not as ${BONEIO_USER}.
     step_mark "step2_apt_install"
     log_info "   Packages installed"
 fi

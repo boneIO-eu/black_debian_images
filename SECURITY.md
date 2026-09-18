@@ -7,7 +7,7 @@ it is covered by the same policy as the application.
 
 Report it through **GitHub private vulnerability reporting** on
 <https://github.com/boneIO-eu/app_bbb> (*Security* tab → *Report a
-vulnerability*), or by email to <pszafer@gmail.com> with `SECURITY` in the
+vulnerability*), or by email to <security@boneio.eu> with `SECURITY` in the
 subject.
 
 The full policy — what to include, what we commit to in return, disclosure

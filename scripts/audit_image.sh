@@ -2,6 +2,12 @@
 #
 # audit_image.sh — report what a boneIO Black image actually ships.
 #
+# This is the evidence side of bringing boneIO in line with the EU Cyber
+# Resilience Act (Regulation (EU) 2024/2847): the requirements are about the
+# product as shipped, so a claim about a device has to be answerable from the
+# device, on demand, in a form somebody else can re-run. Each check names the
+# finding it comes from and says PASS, FAIL or UNKNOWN.
+#
 # Most of what remains open is image-side (F-04, F-05, F-10 and SSH
 # throttling), and none of it can be settled by reading the build scripts: the production path may differ from the USB bring-up path, and a
 # device that has been upgraded is not the same as one freshly flashed. So

@@ -43,7 +43,26 @@ log_skip() { echo -e "${BLUE}[SKIP]${NC} $1"; }
 
 BONEIO_USER="${BONEIO_USER:-boneio}"
 BONEIO_HOME="/home/${BONEIO_USER}"
-SCRIPT_VERSION="2026-07-28.1"
+SCRIPT_VERSION="2026-09-21.1"
+
+# Which boneIO goes into the image.
+#
+# This has to be named, and the reason is not obvious. `pip install --upgrade
+# boneio` resolves to the newest *stable* release, and the whole 1.6 security
+# series is published as pre-releases (1.6.0.devN). PyPI's latest stable is
+# still 1.5.5, so the unpinned form silently builds an image on the 1.5 line:
+# no signed migrations, no closed-vocabulary helpers, no certificate work — the
+# migrations that harden the device are not even present to be run, and nothing
+# in the build fails to say so.
+#
+# Pinned rather than `--pre`, because an image is a release artifact and has to
+# be reproducible: `--pre` would follow to whatever dev release happened to be
+# newest at build time, and would also let pre-releases in for every
+# dependency. An exact `==` on a pre-release version is honoured by pip without
+# `--pre`, which is exactly the narrow permission wanted here.
+#
+# Override for a one-off build:  BONEIO_VERSION=1.6.0.dev11 ./setup_boneio.sh
+BONEIO_VERSION="${BONEIO_VERSION:-1.6.0.dev10}"
 
 # --- Idempotent step markers ---
 MARKER_DIR="/var/lib/boneio/.setup.d"
@@ -534,7 +553,20 @@ log_info "9/12: Installing BoneIO application..."
 mkdir -p ${BONEIO_HOME}/boneio
 python3 -m venv ${BONEIO_HOME}/boneio/venv
 ${BONEIO_HOME}/boneio/venv/bin/pip install --upgrade pip
-${BONEIO_HOME}/boneio/venv/bin/pip install --upgrade boneio
+log_info "   Installing boneio==${BONEIO_VERSION}"
+${BONEIO_HOME}/boneio/venv/bin/pip install --upgrade "boneio==${BONEIO_VERSION}"
+
+# Say out loud what landed. The failure this guards against is not pip erroring
+# — it is pip succeeding with a version nobody intended, which then shows up
+# months later as a controller in a cabinet missing every hardening migration.
+BONEIO_INSTALLED="$(${BONEIO_HOME}/boneio/venv/bin/python3 -c \
+    'import importlib.metadata as m; print(m.version("boneio"))' 2>/dev/null || echo "unknown")"
+if [ "${BONEIO_INSTALLED}" != "${BONEIO_VERSION}" ]; then
+    log_error "   Asked for boneio==${BONEIO_VERSION} but got '${BONEIO_INSTALLED}'"
+    log_error "   Refusing to build an image on a version nobody chose."
+    exit 1
+fi
+log_info "   boneio ${BONEIO_INSTALLED} installed"
 
 # Ensure PyYAML has C extension (CLoader). pip install --upgrade may
 # overwrite our bundled armv7l wheel with a PyPI sdist lacking libyaml.

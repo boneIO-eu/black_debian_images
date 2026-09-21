@@ -6,14 +6,20 @@ Zaloguj się na urządzenie przez SSH i uruchom:
 
 ```bash
 ssh boneio@<adres_ip>
-# Domyślne hasło: Black
+# Hasło ustawiasz sam przy pierwszym logowaniu — patrz "Dane dostępowe" niżej.
 
-# Aktualizacja boneIO do najnowszej wersji
-~/boneio/venv/bin/pip install --upgrade boneio
+# Aktualizacja boneIO do wskazanej wersji
+~/boneio/venv/bin/pip install --upgrade "boneio==1.6.0.dev10"
 
 # Restart usługi
 sudo systemctl restart BoneIO
 ```
+
+> **Dlaczego wersja jest wpisana wprost, a nie `--upgrade boneio`.**
+> Seria 1.6 jest publikowana jako pre-release (`1.6.0.devN`), a `pip install
+> --upgrade boneio` bierze najnowsze wydanie **stabilne** — czyli zostawia
+> urządzenie na linii 1.5 i nic o tym nie mówi. Podstaw numer wersji, którą
+> chcesz wgrać.
 
 ## Aktualizacja Device Tree Overlay
 
@@ -55,13 +61,20 @@ Wymaga karty microSD (min. 8GB) i komputera z Linux.
    - Pierwszy start trwa dłużej (~2-3 minuty) i zawiera 1-2 automatyczne restarty
    - Po zakończeniu urządzenie jest gotowe do użycia
 
-## Domyślne dane dostępowe
+## Dane dostępowe
+
+Obrazy od 1.6 **nie mają już haseł wspólnych dla całej serii**. Ta tabela
+podawała wcześniej `Black` i `boneio123`, identyczne na każdym wysłanym
+urządzeniu — znajomość jednego sterownika oznaczała znajomość wszystkich.
 
 | Usługa | Login | Hasło |
 |--------|-------|-------|
-| SSH | `boneio` | `Black` |
-| MQTT | `boneio` | `boneio123` |
-| MQTT | `homeassistant` | `boneio123` |
+| SSH | `boneio` | ustawiasz przy pierwszym logowaniu (hasło z obrazu jest wygaszone) |
+| MQTT | `boneio` | losowe, per urządzenie — panel zna je sam, Ty nie musisz |
+| MQTT | `homeassistant`, `mqtt` | losowe, do podmiany na własne w **Ustawienia → MQTT** |
+
+Panel może zmienić wszystkie trzy hasła MQTT bez podawania hasła systemowego,
+więc nic nie tracisz na tym, że ich nie znasz.
 
 ## Porty sieciowe
 
@@ -69,5 +82,12 @@ Wymaga karty microSD (min. 8GB) i komputera z Linux.
 |------|--------|
 | 22 | SSH |
 | 1883 | MQTT (Mosquitto) |
-| 8090 | BoneIO Web |
-| 8091 | Nginx proxy (Node-RED) |
+| 8443 | **panel boneIO po HTTPS** (Caddy) — tu wchodzisz |
+| 8090 | panel boneIO, czysty HTTP — od 1.6 **nie jest wystawiony na LAN** |
+| 8091 | Caddy, czysty HTTP (Node-RED) |
+
+Świeży obraz 1.6 ma `web: expose: proxy`, więc na 8090 odpowiada tylko
+loopback, mostek Dockera i kabel USB. Z sieci wchodzisz na
+`https://<adres_ip>:8443` — certyfikat jest self-signed, więc przeglądarka
+ostrzeże raz. Przez kabel USB: `http://192.168.7.2:8090`. Żeby wrócić do
+starego zachowania, ustaw `expose: all` w **Ustawienia → Serwer web**.

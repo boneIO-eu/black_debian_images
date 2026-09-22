@@ -18,8 +18,8 @@
 #
 # Production / Station mode:
 #
-# BONEIO_FLASHER_STATION=1
-#   Instead of halting when the flash finishes, boot systemd from THIS SD CARD
+#   BONEIO_FLASHER_STATION=1
+#     Instead of halting when the flash finishes, boot systemd from THIS SD CARD
 #   with the tester configuration, so black-tester can drive the board over USB
 #   at 192.168.7.2. The eMMC that was just written is not booted — it is the
 #   product, and it stays untouched.
@@ -27,14 +27,14 @@
 #   (This used to say it switched root into the eMMC. It does not, and never
 #   did: the code execs /sbin/init on the SD card.)
 #
-# BONEIO_STATION_PASSWORD=Black
-#   Station mode only. The password black-tester uses over SSH to read the
+#   BONEIO_STATION_PASSWORD=Black
+#     Station mode only. The password black-tester uses over SSH to read the
 #   board serial. The image expires this account on purpose, which stops a
 #   non-interactive login dead, so station mode re-arms it — on the SD card
 #   only. Leave it empty to keep the account expired and give up the serial.
 #
-# BONEIO_EMMC_PASSWORD=<password>
-#   Sets a working password for boneio on the eMMC that was just flashed.
+#   BONEIO_EMMC_PASSWORD=<some-password>
+#     Sets a working password for boneio on the eMMC that was just flashed.
 #   Leave it unset for anything that leaves the building: the image expires
 #   the account so the shipped password cannot keep working on a device in
 #   use, and this gives that up. Bench boards only.
@@ -51,9 +51,14 @@
 # demanded on the spot. You can always get in by hand with the shipped
 # password. What expiry stops is automation, which has nobody to type it.
 # ---------------------------------------------------------------------------
-# Everything below is commented out, which is the working default: the flasher
-# probes I2C2 for a DS2484 to tell a v1.0 board from a v0.x one, flashes the
-# eMMC and halts. Uncomment a line to change that.
+# THE SETTINGS ARE THE BLOCK BELOW. Everything above is documentation, and its
+# examples are indented for exactly that reason: only a line starting with
+# "# " at column 0 down here is a setting you can uncomment. Uncommenting an
+# indented example above does nothing useful — and BONEIO_EMMC_PASSWORD there
+# carries a placeholder, so it would set the literal text as your password.
+#
+# Commented out is the working default: the flasher probes I2C2 for a DS2484 to
+# tell a v1.0 board from a v0.x one, flashes the eMMC and halts.
 #
 # This file ships on every card so the settings are discoverable from the card
 # itself. Nothing here has to be set.

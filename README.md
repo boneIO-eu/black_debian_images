@@ -154,5 +154,9 @@ Gdy flasher wykryje board v1.0 (przez `boneio.txt` lub I2C), automatycznie:
 - Instaluje `/etc/modules-load.d/onewire.conf` (ds2482 + w1-therm)
 - Aktualizuje `version: 0.8` → `version: 1.0` w `config.yaml`
 
-Przykładowy plik: [`scripts/flasher/boneio.txt.example`](scripts/flasher/boneio.txt.example)
+Ten plik jest już na każdej karcie — `/boot/boneio.txt`, ze wszystkimi
+ustawieniami obecnymi i zakomentowanymi. Odkomentuj to, czego potrzebujesz;
+sam plik nic nie zmienia, dopóki wszystko jest zakomentowane.
+
+Wzorzec w repo: [`scripts/flasher/boneio.txt.example`](scripts/flasher/boneio.txt.example)
 

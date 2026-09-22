@@ -239,6 +239,22 @@ rm -f /tmp/flasher_rootfs/etc/bbb.io/ssh_regenerate 2>/dev/null || true
 rm -f /tmp/flasher_rootfs/etc/systemd/system/multi-user.target.wants/bbbio-set-sysconf.service 2>/dev/null || true
 rm -f /tmp/flasher_rootfs/lib/systemd/system/multi-user.target.wants/bbbio-set-sysconf.service 2>/dev/null || true
 
+
+# Ship boneio.txt next to uEnv.txt, with every setting present and commented.
+#
+# The flasher sources /boot/boneio.txt when it is there, so the file being
+# absent and the file being all comments mean the same thing — and one of them
+# tells whoever picks up the card what it can be asked to do. Before this, the
+# settings existed only in a repository nobody has open while standing at a
+# flashing station.
+BONEIO_TXT_TEMPLATE="$SCRIPT_DIR/flasher/boneio.txt.example"
+if [ -f "$BONEIO_TXT_TEMPLATE" ]; then
+    install -m 0644 "$BONEIO_TXT_TEMPLATE" /tmp/flasher_rootfs/boot/boneio.txt
+    echo "Installed /boot/boneio.txt (all settings commented out)"
+else
+    echo "WARNING: $BONEIO_TXT_TEMPLATE not found; card ships without boneio.txt"
+fi
+
 # NOW enable cmdline flasher on the SD card's own uEnv.txt
 # This only affects the SD card boot - the image inside has it disabled.
 if [ -f "$UENV_FILE" ]; then

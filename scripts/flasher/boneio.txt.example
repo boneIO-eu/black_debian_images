@@ -50,7 +50,19 @@
 # with UsePAM yes, so an expired password is accepted once and a new one is
 # demanded on the spot. You can always get in by hand with the shipped
 # password. What expiry stops is automation, which has nobody to type it.
+# ---------------------------------------------------------------------------
+# Everything below is commented out, which is the working default: the flasher
+# probes I2C2 for a DS2484 to tell a v1.0 board from a v0.x one, flashes the
+# eMMC and halts. Uncomment a line to change that.
 #
-# BONEIO_FLASHER_STATION=1
+# This file ships on every card so the settings are discoverable from the card
+# itself. Nothing here has to be set.
+# ---------------------------------------------------------------------------
 
-BOARD_VERSION=0.8
+# BOARD_VERSION=0.8
+# BOARD_VERSION=1.0
+
+# BONEIO_FLASHER_STATION=1
+# BONEIO_STATION_PASSWORD=Black
+# BONEIO_EMMC_PASSWORD=
+

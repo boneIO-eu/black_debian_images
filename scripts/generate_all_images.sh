@@ -409,6 +409,17 @@ create_emmc_flasher() {
     rm -f "$MOUNT_POINT/etc/systemd/system/multi-user.target.wants/bbbio-set-sysconf.service" 2>/dev/null || true
     rm -f "$MOUNT_POINT/lib/systemd/system/multi-user.target.wants/bbbio-set-sysconf.service" 2>/dev/null || true
 
+    # Ship boneio.txt next to uEnv.txt, with every setting present and
+    # commented. Absent and all-comments mean the same thing to the flasher,
+    # but only one of them tells whoever picks up the card what it can do.
+    local boneio_txt_template="$SCRIPT_DIR/flasher/boneio.txt.example"
+    if [ -f "$boneio_txt_template" ]; then
+        install -m 0644 "$boneio_txt_template" "$MOUNT_POINT/boot/boneio.txt"
+        print_info "Installed /boot/boneio.txt (all settings commented out)"
+    else
+        print_warning "boneio.txt template not found; image ships without it"
+    fi
+
     # NOW enable cmdline flasher on the SD card's own uEnv.txt
     if [ -f "$uenv_file" ]; then
         echo "" >> "$uenv_file"

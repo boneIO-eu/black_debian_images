@@ -753,18 +753,27 @@ log_info "   Installing BoneIO configs in ${BONEIO_HOME}/.cache/boneio_configs/.
 CONFIGS_DIR="${BONEIO_HOME}/.cache/boneio_configs"
 mkdir -p "$CONFIGS_DIR"
 
+# Board revision whose configs get installed. The repo keeps one directory per
+# revision (configs/1.0, configs/1.1); the device-side cache stays flat, so the
+# rest of the tooling does not need to know which one was picked.
+BOARD_CONFIG_VERSION="${BOARD_CONFIG_VERSION:-1.1}"
+log_info "   Board config revision: ${BOARD_CONFIG_VERSION}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")"
-if [ -n "$SCRIPT_DIR" ] && [ -d "$SCRIPT_DIR/../configs" ]; then
-    cp -r "$SCRIPT_DIR/../configs"/* "$CONFIGS_DIR/"
+if [ -n "$SCRIPT_DIR" ] && [ -d "$SCRIPT_DIR/../configs/$BOARD_CONFIG_VERSION" ]; then
+    cp -r "$SCRIPT_DIR/../configs/$BOARD_CONFIG_VERSION"/* "$CONFIGS_DIR/"
 else
     # Fallback when running piped via curl: download configs from GitHub
     for variant in 32x10 24x16 cover cover_mix tester; do
         mkdir -p "$CONFIGS_DIR/$variant"
         for f in config.yaml event.yaml binary_sensor.yaml mqtt.yaml adc.yaml output32x10A.yaml output24x16A.yaml outputCover.yaml outputCoverMix.yaml cover.yaml; do
-            curl -fsSL "https://raw.githubusercontent.com/boneIO-eu/black_debian_images/main/configs/$variant/$f" -o "$CONFIGS_DIR/$variant/$f" 2>/dev/null || true
+            curl -fsSL "https://raw.githubusercontent.com/boneIO-eu/black_debian_images/main/configs/$BOARD_CONFIG_VERSION/$variant/$f" -o "$CONFIGS_DIR/$variant/$f" 2>/dev/null || true
         done
     done
 fi
+# A 404 leaves curl's -o file behind as an empty stub; drop those so a missing
+# variant looks missing instead of looking like an empty config.
+find "$CONFIGS_DIR" -type f -name '*.yaml' -size 0 -delete 2>/dev/null || true
 
 # Pre-generate schema cache and config caches for all 5 variants
 log_info "   Pre-generating schema cache and config caches..."

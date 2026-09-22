@@ -30,12 +30,48 @@ Skrypt instaluje wszystkie powyższe (apt) i wypisuje raport co się udało.
 Wymaga systemu opartego o `apt` (Ubuntu/Debian). Jeśli chcesz korzystać
 z `generate_all_images.sh`, sklonuj `app_black` obok tego repo (`../app_black`).
 
-Cache configów (`configs/*/config.yaml.cache.pkl`) jest generowany, nie trzymany
+Cache configów (`configs/<wersja>/*/config.yaml.cache.pkl`) jest generowany, nie trzymany
 w repo. `generate_all_images.sh` przelicza go na świeżo przy każdym budowaniu
 i **przerywa build**, jeśli się nie uda albo jeśli `schema.yaml` w `app_black`
 różni się od tego, który instaluje obraz — w obu przypadkach sterownik odrzuciłby
 cache i walidował config przy pierwszym starcie (20-30 s na BBB). Jeśli świadomie
 godzisz się na wolny pierwszy start, dodaj `--allow-cold-cache`.
+
+### Configi per wersja płyty
+
+`configs/` trzyma jeden katalog na rewizję sprzętu, tak jak `boneio/boards/`
+w `app_black`:
+
+```
+configs/
+  1.0/{24x16,32x10,cover,cover_mix,tester}/
+  1.1/{24x16,32x10,cover,cover_mix,tester}/
+```
+
+1.0 i 1.1 są na razie identyczne poza `boneio.version` — 1.1 różni się buzzerem,
+który nie wymaga zmian w configu. Na urządzeniu układ pozostaje płaski
+(`~/.cache/boneio_configs/<wariant>/`), więc instalator kopiuje tam tylko
+wybraną rewizję.
+
+Domyślną rewizję wybiera `BOARD_CONFIG_VERSION` (domyślnie **1.1**), ustawiana
+w czterech miejscach — przy podbiciu wersji trzeba ruszyć wszystkie:
+
+| Plik | Zmienna |
+| --- | --- |
+| `scripts/generate_all_images.sh` | `BOARD_CONFIG_VERSION` |
+| `scripts/create_flasher_sd.sh` | `BOARD_CONFIG_VERSION` |
+| `scripts/setup_boneio.sh` | `BOARD_CONFIG_VERSION` |
+| `scripts/flasher/init-beagle-flasher-img` | `DETECTED_V1_VERSION` |
+
+Trzy pierwsze da się nadpisać z env na jeden build:
+
+```bash
+BOARD_CONFIG_VERSION=1.0 sudo ./scripts/generate_all_images.sh rootfs.img 1.6.0
+```
+
+Flasher eMMC stempluje wykrytą płytę osobno: probe I2C odróżnia tylko 1.x od
+0.x, więc płyta wykryta po DS2484 dostaje `DETECTED_V1_VERSION`, chyba że
+`boneio.txt` mówi inaczej.
 
 ### Krok 1: Przygotowanie bazowego systemu (na BBB)
 

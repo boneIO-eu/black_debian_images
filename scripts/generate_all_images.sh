@@ -17,6 +17,11 @@ set -e
 # Parse arguments
 SOURCE_IMAGE=""
 VERSION="1.0.1"
+# Which board-config set goes into the images: configs/<BOARD_CONFIG_VERSION>/.
+# This is the hardware revision the configs describe, not the image version
+# above. Boards coming off the line now are 1.1; export BOARD_CONFIG_VERSION=1.0
+# to build images for the older revision.
+BOARD_CONFIG_VERSION="${BOARD_CONFIG_VERSION:-1.1}"
 GENERATE_EMMC_FLASHER=false
 ONLY_DEVICE=""
 ALLOW_COLD_CACHE=false
@@ -294,8 +299,8 @@ apply_device_config() {
     # 1. Check repo configs/ directory (latest YAMLs, plus a .cache.pkl if the
     #    refresh above rebuilt one — the caches are generated, not committed)
     local example_dir=""
-    if [ -d "$SCRIPT_DIR/../configs/$device_name" ]; then
-        example_dir="$SCRIPT_DIR/../configs/$device_name"
+    if [ -d "$SCRIPT_DIR/../configs/$BOARD_CONFIG_VERSION/$device_name" ]; then
+        example_dir="$SCRIPT_DIR/../configs/$BOARD_CONFIG_VERSION/$device_name"
     # 2. Check /home/boneio/.cache/boneio_configs inside the mounted image
     elif [ -d "$MOUNT_POINT/home/boneio/.cache/boneio_configs/$device_name" ]; then
         example_dir="$MOUNT_POINT/home/boneio/.cache/boneio_configs/$device_name"
@@ -692,7 +697,7 @@ refresh_config_caches() {
         return 1
     fi
 
-    print_info "Warming config caches for: ${variants[*]}"
+    print_info "Warming config caches for board $BOARD_CONFIG_VERSION: ${variants[*]}"
 
     # Run as the invoking user, not root: the caches land inside this repo and a
     # root-owned .pkl would be the next surprise for whoever builds without sudo.
@@ -706,7 +711,7 @@ import os, sys
 sys.path.insert(0, os.getcwd())
 import boneio.core.config.yaml_util as y
 
-base_dir = '$SCRIPT_DIR/../configs'
+base_dir = '$SCRIPT_DIR/../configs/$BOARD_CONFIG_VERSION'
 failed = []
 for variant in sys.argv[1:]:
     cfg = os.path.join(base_dir, variant, 'config.yaml')

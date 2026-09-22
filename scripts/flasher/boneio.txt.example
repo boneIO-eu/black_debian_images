@@ -17,8 +17,27 @@
 # auto-detect the board version by probing I2C2 for DS2484 at 0x18.
 #
 # Production / Station mode:
-# Set BONEIO_FLASHER_STATION=1 on factory SD flasher cards to automatically
-# switch root and boot into the newly flashed eMMC system without shutting down.
+#
+# BONEIO_FLASHER_STATION=1
+#   Instead of halting when the flash finishes, boot systemd from THIS SD CARD
+#   with the tester configuration, so black-tester can drive the board over USB
+#   at 192.168.7.2. The eMMC that was just written is not booted — it is the
+#   product, and it stays untouched.
+#
+#   (This used to say it switched root into the eMMC. It does not, and never
+#   did: the code execs /sbin/init on the SD card.)
+#
+# BONEIO_STATION_PASSWORD=Black
+#   Station mode only. The password black-tester uses over SSH to read the
+#   board serial. The image expires this account on purpose, which stops a
+#   non-interactive login dead, so station mode re-arms it — on the SD card
+#   only. Leave it empty to keep the account expired and give up the serial.
+#
+# BONEIO_USER_ON_EMMC=<password>
+#   Sets a working password for boneio on the eMMC that was just flashed.
+#   Leave it unset for anything that leaves the building: the image expires
+#   the account so the shipped password cannot keep working on a device in
+#   use, and this gives that up. Bench boards only.
 #
 # BONEIO_FLASHER_STATION=1
 

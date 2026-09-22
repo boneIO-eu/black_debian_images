@@ -1,4 +1,48 @@
 #!/bin/bash -e
+#
+# init-beagle-flasher-img — writes /boneio-emmc.img to the eMMC and then either
+# powers the board down or boots it as a test station.
+#
+# Runs as PID 1 from the SD card. Every setting comes from boneio.txt on the SD
+# card's FAT32 boot partition, which is sourced as shell — see
+# scripts/flasher/boneio.txt.example.
+#
+#   BOARD_VERSION=0.8 | 1.0
+#       Which board is being flashed. Picks the device-tree overlay and the
+#       config. Leave it unset to probe I2C2 for a DS2484 at 0x18 and decide
+#       from that; set it when flashing with no input board attached, because
+#       then there is nothing to probe.
+#
+#   BONEIO_FLASHER_STATION=1
+#       Factory test station. Instead of halting when the flash is done, the
+#       board boots systemd from the SD CARD (not from the eMMC it just wrote)
+#       with the tester configuration, so black-tester can drive it over USB at
+#       192.168.7.2. Anything else, including unset, means halt and wait for
+#       the card to be pulled.
+#
+#   BONEIO_STATION_PASSWORD=Black
+#       Station mode only. The password black-tester uses over SSH to read the
+#       board serial. The shipped image expires the account on purpose, which
+#       stops a non-interactive login dead, so station mode re-arms it on the
+#       SD card. Only ever touches the SD card. Set it empty to leave the
+#       account expired and give up the serial read.
+#
+#   BONEIO_USER_ON_EMMC=<password>
+#       Sets a working password for the boneio account on the eMMC that was
+#       just flashed. Off by default, and off is the right answer for anything
+#       that leaves the building: the image deliberately ships the account
+#       expired so the shipped password cannot keep working on a device in
+#       use. Set it only for boards that stay on the bench.
+#
+# Run with --help to print this.
+#
+
+case "${1:-}" in
+	-h|--help|help)
+		sed -n '2,/^$/p' "$0" | sed 's/^#\{0,1\} \{0,1\}//'
+		exit 0
+		;;
+esac
 
 if ! id | grep -q root; then
 	echo "must be run as root:"
@@ -776,12 +820,96 @@ RCEOF
 		message="INFO: Added first-boot resize2fs fallback to rc.local" ; broadcast
 	fi
 
+	# Optional: a working password on the eMMC that was just written.
+	#
+	# Off by default, and off is right for anything that leaves the building.
+	# The image expires this account on purpose (F-04): the shipped password
+	# stops working after the first interactive login, so it cannot quietly
+	# keep working on a customer device for years. Setting this gives that up
+	# for the flashed board, which is why it says so in the log.
+	if [ -n "${BONEIO_USER_ON_EMMC:-}" ]; then
+		if [ -f /tmp/rootfs/etc/shadow ]; then
+			if chroot /tmp/rootfs /bin/sh -c \
+				"echo 'boneio:${BONEIO_USER_ON_EMMC}' | chpasswd" 2>/dev/null; then
+				# Undo the expiry the image ships with, or the password is set
+				# and still unusable without an interactive change.
+				chroot /tmp/rootfs chage -d "$(( $(date +%s) / 86400 ))" boneio 2>/dev/null || true
+				message="WARN: ===============================================" ; broadcast
+				message="WARN: eMMC ships with a WORKING boneio password" ; broadcast
+				message="WARN: BONEIO_USER_ON_EMMC was set, so the account is" ; broadcast
+				message="WARN: no longer expired. Bench boards only." ; broadcast
+				message="WARN: ===============================================" ; broadcast
+			else
+				message="ERROR: Could not set the eMMC boneio password" ; broadcast
+			fi
+		else
+			message="ERROR: No /etc/shadow on the eMMC rootfs; password not set" ; broadcast
+		fi
+	fi
+
 	oled_msg "Setup system" "[=========-] 90%" "Finishing up..."
 	sync
 	umount /tmp/rootfs/ || umount -l /tmp/rootfs/ || true
 	message="INFO: eMMC rootfs configuration fixed" ; broadcast
 	oled_msg "Setup system" "[==========] 100%" "Complete!"
 	message="--------------------------------------------------------------------------------" ; broadcast
+}
+
+# Make the SD card system answer black-tester. Two things stop it by default,
+# and both are deliberate everywhere except here.
+station_prepare_sd_for_tester () {
+	# 1. The account is shipped expired (chage -d 0, see setup_boneio.sh). That
+	#    is the right posture for a product — it stops the shipped password
+	#    working forever on a device in use — but sshd then demands a new
+	#    password at login, which a non-interactive paramiko session cannot
+	#    give. black-tester reads the board serial over SSH, so without this it
+	#    reports no serial and the board cannot be matched to its test.
+	#
+	#    Only the SD card is touched. The eMMC that was just written keeps the
+	#    expired account.
+	if [ -n "${BONEIO_STATION_PASSWORD:-Black}" ]; then
+		local station_pw="${BONEIO_STATION_PASSWORD:-Black}"
+		if echo "boneio:${station_pw}" | chpasswd 2>/dev/null; then
+			# chpasswd alone leaves the expiry date at 0, which still forces a
+			# change at login. Both are needed.
+			chage -d "$(( $(date +%s) / 86400 ))" boneio 2>/dev/null || true
+			message="INFO: SD card boneio password re-armed for the tester" ; broadcast
+		else
+			message="WARN: Could not set the SD card boneio password; the tester will not read the serial" ; broadcast
+		fi
+	else
+		message="INFO: BONEIO_STATION_PASSWORD empty — leaving the account expired" ; broadcast
+	fi
+
+	# 2. A device with no administrator account answers 403 "setup_required" to
+	#    every API call, because the first-run wizard has not been through. A
+	#    test station has nobody to walk it through, and the tester would see
+	#    nothing but 403s — no hardware errors, no I2C scan, no relay switching,
+	#    and so no reported fault, because it never reaches one.
+	#
+	#    So the flag is set here, at station boot, on the SD card's own config.
+	#    Deliberately not in configs/tester/config.yaml: that directory is
+	#    copied into ~/.cache/boneio_configs on every product image, and a file
+	#    saying allow_anonymous sitting on every device in the field is a
+	#    hazard waiting for the first feature that offers to restore a factory
+	#    template. Nothing selects it today. That is not a reason to ship it.
+	#
+	#    The config cache keys on the file's SHA256, so editing it is enough —
+	#    the cache re-validates by itself.
+	local station_config="/home/boneio/boneio/config.yaml"
+	if [ -f "$station_config" ]; then
+		if grep -q "allow_anonymous" "$station_config"; then
+			message="INFO: Tester config already allows anonymous API access" ; broadcast
+		elif grep -q "^web:" "$station_config"; then
+			sed -i "s/^web:/web:\n  auth:\n    allow_anonymous: true/" "$station_config"
+			message="INFO: Enabled anonymous API access for the tester" ; broadcast
+		else
+			printf "\nweb:\n  auth:\n    allow_anonymous: true\n" >> "$station_config"
+			message="INFO: Added web.auth.allow_anonymous for the tester" ; broadcast
+		fi
+	else
+		message="WARN: No ${station_config} — the tester will get 403 from the API" ; broadcast
+	fi
 }
 
 station_boot_or_shutdown () {
@@ -800,6 +928,8 @@ station_boot_or_shutdown () {
 		mount -o remount,rw / 2>/dev/null || true
 
 		message="INFO: Tester config ready in /home/boneio/boneio" ; broadcast
+
+		station_prepare_sd_for_tester
 
 		# Generate SSH host keys for the SD card system if missing,
 		# and remove ssh_regenerate / disable bbbio-set-sysconf so it NEVER triggers a reboot in station mode.

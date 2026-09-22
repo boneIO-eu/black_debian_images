@@ -8,7 +8,8 @@
 #
 # Supported values:
 #   BOARD_VERSION=0.8    — BoneIO Black v0.4–v0.8 (GPIO 1-Wire)
-#   BOARD_VERSION=1.0    — BoneIO Black v1.0+     (DS2484 I2C 1-Wire bridge)
+#   BOARD_VERSION=1.0    — BoneIO Black v1.0      (DS2484 I2C 1-Wire bridge)
+#   BOARD_VERSION=1.1    — BoneIO Black v1.1      (as 1.0, plus buzzer)
 #
 # When flashing WITHOUT an input board connected, set this to the
 # target board version so the correct overlay and config are applied.
@@ -58,7 +59,10 @@
 # carries a placeholder, so it would set the literal text as your password.
 #
 # Commented out is the working default: the flasher probes I2C2 for a DS2484 to
-# tell a v1.0 board from a v0.x one, flashes the eMMC and halts.
+# tell a v1.x board from a v0.x one — 1.0 and 1.1 differ only by the buzzer,
+# which is not on I2C — so an auto-detected board is stamped 1.1. Set
+# BOARD_VERSION here to flash an older 1.0 board. Then it flashes the eMMC
+# and halts.
 #
 # This file ships on every card so the settings are discoverable from the card
 # itself. Nothing here has to be set.
@@ -66,6 +70,7 @@
 
 # BOARD_VERSION=0.8
 # BOARD_VERSION=1.0
+# BOARD_VERSION=1.1
 
 # BONEIO_FLASHER_STATION=1
 # BONEIO_STATION_PASSWORD=Black

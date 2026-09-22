@@ -7,7 +7,7 @@
 # card's FAT32 boot partition, which is sourced as shell — see
 # scripts/flasher/boneio.txt.example.
 #
-#   BOARD_VERSION=0.8 | 1.0
+#   BOARD_VERSION=0.8 | 1.0 | 1.1
 #       Which board is being flashed. Picks the device-tree overlay and the
 #       config. Leave it unset to probe I2C2 for a DS2484 at 0x18 and decide
 #       from that; set it when flashing with no input board attached, because
@@ -523,13 +523,20 @@ fix_emmc_rootfs () {
 	#   1. /boot/firmware/boneio.txt (user override on SD boot partition)
 	#   2. I2C probe: DS2484 at 0x18 on I2C2 = board v1.0+
 	#
+	# The probe can only tell a 1.x board from a 0.x one — 1.0 and 1.1 are
+	# electrically identical apart from the buzzer, which is not on I2C. Boards
+	# coming off the line now are 1.1, so that is what an auto-detected board is
+	# stamped with; put BOARD_VERSION in boneio.txt to flash an older 1.0.
+	#
 	# boneio.txt format (FAT32 boot partition, editable from any PC):
-	#   BOARD_VERSION=1.0
+	#   BOARD_VERSION=1.1
 	# =========================================================================
 	oled_msg "Setup system" "[======-----] 62%" "Detecting board"
 
 	BOARD_VERSION=""
 	BOARD_HAS_DS2484=false
+	# Version stamped on a board identified by the I2C probe alone.
+	DETECTED_V1_VERSION="1.1"
 
 	# 1. Check for boneio.txt override on SD boot partition
 	#    When running as init (PID 1), /boot/firmware is NOT mounted yet.
@@ -557,9 +564,9 @@ fix_emmc_rootfs () {
 		if [ -n "$BOARD_VERSION" ]; then
 			message="INFO: Found boneio.txt -> BOARD_VERSION=${BOARD_VERSION}" ; broadcast
 			case "$BOARD_VERSION" in
-				1.0|1.0.*)
+				1.0|1.0.*|1.1|1.1.*)
 					BOARD_HAS_DS2484=true
-					message="INFO: Board version ${BOARD_VERSION} -> using v1.0 overlay + config" ; broadcast
+					message="INFO: Board version ${BOARD_VERSION} -> using v1.0 overlay, config stamped ${BOARD_VERSION}" ; broadcast
 					;;
 				0.4|0.5|0.6|0.7|0.8|0.8.*)
 					BOARD_HAS_DS2484=false
@@ -601,7 +608,8 @@ fix_emmc_rootfs () {
 			# Probe address 0x18 on I2C bus 2 (quick mode, single address)
 			if echo "$I2C_SCAN" | grep -q "18"; then
 				BOARD_HAS_DS2484=true
-				message="INFO: DS2484 detected at 0x18 on I2C2 -> board v1.0+" ; broadcast
+				BOARD_VERSION="$DETECTED_V1_VERSION"
+				message="INFO: DS2484 detected at 0x18 on I2C2 -> board v1.x, stamping ${BOARD_VERSION}" ; broadcast
 			else
 				message="INFO: No DS2484 at 0x18 -> board v0.4-v0.8 (GPIO 1-Wire)" ; broadcast
 			fi
@@ -623,7 +631,8 @@ finally:
     os.close(fd)
 " 2>/dev/null | grep -q "found"; then
 				BOARD_HAS_DS2484=true
-				message="INFO: DS2484 detected (raw probe) -> board v1.0+" ; broadcast
+				BOARD_VERSION="$DETECTED_V1_VERSION"
+				message="INFO: DS2484 detected (raw probe) -> board v1.x, stamping ${BOARD_VERSION}" ; broadcast
 			else
 				message="INFO: No DS2484 (raw probe) -> board v0.4-v0.8" ; broadcast
 			fi
@@ -660,12 +669,26 @@ finally:
 			message="INFO: onewire.conf already exists, skipping" ; broadcast
 		fi
 
-		# Update board version in config.yaml (0.8 -> 1.0)
+		# Stamp the detected board version into config.yaml. The shipped image
+		# carries 0.8; a re-flashed 1.0 board gets bumped to whatever this run
+		# detected, so the config always matches the board in hand.
+		TARGET_VERSION="${BOARD_VERSION:-$DETECTED_V1_VERSION}"
 		BONEIO_CONFIG="/tmp/rootfs/home/boneio/boneio/config.yaml"
 		if [ -f "$BONEIO_CONFIG" ]; then
-			if grep -q 'version:.*0\.8' "$BONEIO_CONFIG"; then
-				sed -i 's/\(version:\s*\)0\.8/\11.0/' "$BONEIO_CONFIG"
-				message="INFO: Updated config.yaml board version 0.8 -> 1.0" ; broadcast
+			# Only the version: inside the boneio: section. Other sections carry
+			# their own version keys (a modbus device, for one), and stamping
+			# those would quietly corrupt the config. The sed range runs from
+			# "boneio:" to the next top-level key; busybox sed has no \s, hence
+			# the POSIX classes.
+			BONEIO_SECTION='/^boneio:/,/^[^[:space:]#]/'
+			OLD_VER=$(sed -n "${BONEIO_SECTION} s/^[[:space:]]*version:[[:space:]]*\([0-9.]*\).*/\1/p" "$BONEIO_CONFIG" | head -n 1)
+			if [ -z "$OLD_VER" ]; then
+				message="WARNING: No board version in config.yaml boneio section, leaving it alone" ; broadcast
+			elif [ "$OLD_VER" = "$TARGET_VERSION" ]; then
+				message="INFO: config.yaml board version already ${TARGET_VERSION}" ; broadcast
+			else
+				sed -i "${BONEIO_SECTION} s/^\([[:space:]]*version:[[:space:]]*\)[0-9.]*/\1${TARGET_VERSION}/" "$BONEIO_CONFIG"
+				message="INFO: Updated config.yaml board version ${OLD_VER} -> ${TARGET_VERSION}" ; broadcast
 			fi
 			# Remove deprecated ds2482 section (kernel handles 1-Wire now)
 			if grep -q '^ds2482:' "$BONEIO_CONFIG"; then

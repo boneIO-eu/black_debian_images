@@ -669,8 +669,34 @@ for F in $BONEIO_MIGRATE_HELPER; do BONEIO_MIGRATE_HELPER="$F"; break; done
 for F in $BONEIO_MIGRATE_SUDOERS; do BONEIO_MIGRATE_SUDOERS="$F"; break; done
 for F in $BONEIO_INSTALL_HELPER; do BONEIO_INSTALL_HELPER="$F"; break; done
 
-if [ -f "${BONEIO_INSTALL_HELPER}" ]; then
-    bash "${BONEIO_INSTALL_HELPER}" "${BONEIO_MIGRATE_HELPER}" "${BONEIO_MIGRATE_SUDOERS}"
+# Do not resurrect the legacy helper on a device that has already retired it.
+#
+# install-helper.sh creates /usr/sbin/boneio-migrate unconditionally, and
+# migration 1.6.6 removes it — that removal is where F-04 closes. On a second
+# run of this script the order is: bootstrap re-creates the helper, then
+# apply_all() skips 1.6.6 because it is already marked applied, and the device
+# ends up with the retired helper back and its NOPASSWD rule with it. The
+# hardening is undone by re-running the setup, silently.
+#
+# The runner needs *a* helper, not this one: MigrationRunner falls back to
+# boneio-migrate-v2 when it is installed and its selftest passes, so a device
+# that has pivoted needs no legacy bootstrap at all.
+BOOTSTRAP_LEGACY=true
+if [ -x /usr/sbin/boneio-migrate-v2 ] && sudo -n /usr/sbin/boneio-migrate-v2 --selftest >/dev/null 2>&1; then
+    BOOTSTRAP_LEGACY=false
+    log_info "   boneio-migrate-v2 is healthy — not installing the retired legacy helper"
+    if [ -e /usr/sbin/boneio-migrate ] || [ -e /etc/sudoers.d/boneio-migrate ]; then
+        rm -f /usr/sbin/boneio-migrate /etc/sudoers.d/boneio-migrate
+        log_info "   Removed a legacy helper left over from an earlier run (F-04)"
+    fi
+fi
+
+if [ "$BOOTSTRAP_LEGACY" = true ] && [ ! -f "${BONEIO_INSTALL_HELPER}" ]; then
+    log_warn "boneio-migrate bootstrap not found, skipping migration apply"
+else
+    if [ "$BOOTSTRAP_LEGACY" = true ]; then
+        bash "${BONEIO_INSTALL_HELPER}" "${BONEIO_MIGRATE_HELPER}" "${BONEIO_MIGRATE_SUDOERS}"
+    fi
     # Apply all migrations via MigrationRunner.
     # We run as root (setup_boneio.sh is already root) so boneio-migrate helper
     # can write to /etc/systemd, /usr/sbin, etc. without sudoers issues.
@@ -716,8 +742,6 @@ print(f'Migrations applied. Status: {r.status}')
     else
         log_info "   All migrations applied successfully"
     fi
-else
-    log_warn "boneio-migrate bootstrap not found, skipping migration apply"
 fi
 
 # Pre-compile Python bytecode (.pyc) to speed up cold startup
@@ -965,8 +989,11 @@ done
 # the channel that was meant to close.
 if [ -e "/usr/sbin/boneio-migrate" ]; then
     log_error "   ❌ STILL PRESENT: /usr/sbin/boneio-migrate"
-    log_error "      Migration 1.6.6 should have removed it. The v2 selftest"
-    log_error "      probably failed — check /var/log/boneio-migrate.log."
+    log_error "      Migration 1.6.6 retires it. If 1.6.6.applied exists in"
+    log_error "      /var/lib/boneio/migrations.d/ then something re-created"
+    log_error "      the helper after the migration ran — the migration will"
+    log_error "      not run again to remove it. If it does not exist, the"
+    log_error "      v2 selftest failed; see /var/log/boneio-migrate.log."
     VALIDATE_OK=false
 else
     log_info "   ✅ /usr/sbin/boneio-migrate retired (F-04)"

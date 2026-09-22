@@ -939,7 +939,10 @@ for check_path in \
     "${BONEIO_HOME}/boneio/venv/bin/python3" \
     "/usr/sbin/oled_msg.py" \
     "/usr/sbin/oled_msg.sh" \
-    "/usr/sbin/boneio-migrate"; do
+    "/usr/sbin/boneio-migrate-v2" \
+    "/usr/sbin/boneio-containers" \
+    "/usr/sbin/boneio-helpers-heal" \
+    "/usr/sbin/boneio-system"; do
     if [ -e "$check_path" ] || [ -L "$check_path" ]; then
         log_info "   ✅ $check_path"
     else
@@ -947,6 +950,27 @@ for check_path in \
         VALIDATE_OK=false
     fi
 done
+
+# The old helper has to be GONE, not present.
+#
+# /usr/sbin/boneio-migrate took a migration plan from whoever called it, and
+# migration 1.6.6 removes it — that removal is where F-04 actually closes.
+# Until now this list asked for the retired helper and failed the build when
+# the hardening had worked, which is the most confusing way a check can be
+# wrong: it reports success as failure and sends you looking for a break that
+# is not there.
+#
+# 1.6.6 only runs after `boneio-migrate-v2 --selftest` returns zero, so the old
+# helper still being here means the pivot did not finish and the device kept
+# the channel that was meant to close.
+if [ -e "/usr/sbin/boneio-migrate" ]; then
+    log_error "   ❌ STILL PRESENT: /usr/sbin/boneio-migrate"
+    log_error "      Migration 1.6.6 should have removed it. The v2 selftest"
+    log_error "      probably failed — check /var/log/boneio-migrate.log."
+    VALIDATE_OK=false
+else
+    log_info "   ✅ /usr/sbin/boneio-migrate retired (F-04)"
+fi
 
 # Check boneio package is importable
 cd /tmp

@@ -361,6 +361,52 @@ apply_device_config() {
 #   - /boneio-emmc.img embedded copy (image to flash to eMMC)
 #   - Flasher init script + OLED helper scripts
 #   - uEnv.txt with cmdline=init=/usr/sbin/init-beagle-flasher-img
+# Install the commented boneio.txt template onto a card's FAT boot partition.
+# Takes the loop/block device holding the partitions.
+install_boneio_txt() {
+    local dev="$1"
+    local template="$SCRIPT_DIR/flasher/boneio.txt.example"
+
+    if [ ! -f "$template" ]; then
+        print_warning "boneio.txt template not found at $template; card ships without it"
+        return 0
+    fi
+
+    local boot_part=""
+    local i part fs_type
+    for i in 1 2 3; do
+        for part in "${dev}p${i}" "${dev}${i}"; do
+            if [ -b "$part" ]; then
+                fs_type="$(blkid -s TYPE -o value "$part" 2>/dev/null || echo unknown)"
+                if [ "$fs_type" = "vfat" ]; then
+                    boot_part="$part"
+                    break 2
+                fi
+            fi
+        done
+    done
+
+    if [ -z "$boot_part" ]; then
+        print_warning "No FAT boot partition found on $dev — boneio.txt not installed."
+        print_warning "The flasher will still auto-detect the board, but nobody can override it from a PC."
+        return 0
+    fi
+
+    local boot_mnt="/tmp/boneio_txt_boot.$$"
+    mkdir -p "$boot_mnt"
+    if ! mount "$boot_part" "$boot_mnt" 2>/dev/null; then
+        print_warning "Could not mount $boot_part — boneio.txt not installed."
+        rmdir "$boot_mnt" 2>/dev/null || true
+        return 0
+    fi
+
+    install -m 0644 "$template" "$boot_mnt/boneio.txt"
+    sync
+    umount "$boot_mnt"
+    rmdir "$boot_mnt" 2>/dev/null || true
+    print_info "Installed boneio.txt on the FAT boot partition ($boot_part), all settings commented out"
+}
+
 create_emmc_flasher() {
     local sdcard_img="$1"
     local device_name="$2"
@@ -483,16 +529,15 @@ create_emmc_flasher() {
     rm -f "$MOUNT_POINT/etc/systemd/system/multi-user.target.wants/bbbio-set-sysconf.service" 2>/dev/null || true
     rm -f "$MOUNT_POINT/lib/systemd/system/multi-user.target.wants/bbbio-set-sysconf.service" 2>/dev/null || true
 
-    # Ship boneio.txt next to uEnv.txt, with every setting present and
-    # commented. Absent and all-comments mean the same thing to the flasher,
-    # but only one of them tells whoever picks up the card what it can do.
-    local boneio_txt_template="$SCRIPT_DIR/flasher/boneio.txt.example"
-    if [ -f "$boneio_txt_template" ]; then
-        install -m 0644 "$boneio_txt_template" "$MOUNT_POINT/boot/boneio.txt"
-        print_info "Installed /boot/boneio.txt (all settings commented out)"
-    else
-        print_warning "boneio.txt template not found; image ships without it"
-    fi
+    # Ship boneio.txt with every setting present and commented, on the FAT
+    # partition — which is the only place that serves the purpose. The flasher
+    # mounts /dev/mmcblk0p1 at /boot/firmware and looks there first, and FAT is
+    # the only filesystem on the card a Windows or macOS machine can open, which
+    # is the whole point of a file you edit at a flashing station.
+    #
+    # The rootfs /boot is the flasher's second candidate, but it is ext4: the
+    # file would be invisible to the person meant to edit it.
+    install_boneio_txt "$FLASHER_LOOP"
 
     # NOW enable cmdline flasher on the SD card's own uEnv.txt
     if [ -f "$uenv_file" ]; then
@@ -556,7 +601,12 @@ process_device_type() {
     if [ "$GENERATE_EMMC_FLASHER" = true ]; then
         install_flasher_script
     fi
-    
+
+    # Step 4b: every card carries boneio.txt on its FAT partition, whether or
+    # not this one is a flasher — a card you can read the settings off is the
+    # point, and you do not know in advance which card ends up at the station.
+    install_boneio_txt "$LOOP_DEVICE"
+
     # Step 5: Unmount
     unmount_image
     

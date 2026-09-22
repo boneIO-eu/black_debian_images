@@ -161,9 +161,14 @@ Gdy flasher wykryje board v1.0 (przez `boneio.txt` lub I2C), automatycznie:
 - Instaluje `/etc/modules-load.d/onewire.conf` (ds2482 + w1-therm)
 - Aktualizuje `version: 0.8` → `version: 1.0` w `config.yaml`
 
-Ten plik jest już na każdej karcie — `/boot/boneio.txt`, ze wszystkimi
-ustawieniami obecnymi i zakomentowanymi. Odkomentuj to, czego potrzebujesz;
-sam plik nic nie zmienia, dopóki wszystko jest zakomentowane.
+Ten plik jest już na każdej karcie — **na partycji FAT `BOOT`**, czyli tej,
+którą widać po włożeniu karty do dowolnego PC (także Windows/macOS). Wszystkie
+ustawienia są obecne i zakomentowane; odkomentuj to, czego potrzebujesz. Sam
+plik nic nie zmienia, dopóki wszystko jest zakomentowane.
+
+Flasher montuje tę partycję jako `/boot/firmware` i czyta ją w pierwszej
+kolejności. `/boot/boneio.txt` w rootfs jest drugą opcją, ale rootfs jest ext4 —
+z Windows/macOS go nie otworzysz, więc nie trzymamy tam tego pliku.
 
 Wzorzec w repo: [`scripts/flasher/boneio.txt.example`](scripts/flasher/boneio.txt.example)
 

@@ -240,19 +240,48 @@ rm -f /tmp/flasher_rootfs/etc/systemd/system/multi-user.target.wants/bbbio-set-s
 rm -f /tmp/flasher_rootfs/lib/systemd/system/multi-user.target.wants/bbbio-set-sysconf.service 2>/dev/null || true
 
 
-# Ship boneio.txt next to uEnv.txt, with every setting present and commented.
+# Ship boneio.txt with every setting present and commented, on the FAT boot
+# partition.
 #
-# The flasher sources /boot/boneio.txt when it is there, so the file being
-# absent and the file being all comments mean the same thing — and one of them
-# tells whoever picks up the card what it can be asked to do. Before this, the
-# settings existed only in a repository nobody has open while standing at a
-# flashing station.
+# That partition is where the flasher looks first — it mounts p1 at
+# /boot/firmware before reading the file — and it is the only filesystem on the
+# card a Windows or macOS machine can open. The rootfs /boot is the flasher's
+# second candidate, but it is ext4, so a file placed there is invisible to the
+# person who is supposed to edit it. Before this, the settings existed only in
+# a repository nobody has open while standing at a flashing station.
+#
+# Absent and all-comments mean the same thing to the flasher; the difference is
+# that one of them tells whoever picks up the card what it can be asked to do.
 BONEIO_TXT_TEMPLATE="$SCRIPT_DIR/flasher/boneio.txt.example"
-if [ -f "$BONEIO_TXT_TEMPLATE" ]; then
-    install -m 0644 "$BONEIO_TXT_TEMPLATE" /tmp/flasher_rootfs/boot/boneio.txt
-    echo "Installed /boot/boneio.txt (all settings commented out)"
-else
+if [ ! -f "$BONEIO_TXT_TEMPLATE" ]; then
     echo "WARNING: $BONEIO_TXT_TEMPLATE not found; card ships without boneio.txt"
+else
+    BOOT_PART=""
+    for i in 1 2 3; do
+        for cand in "${SD_DEVICE}p${i}" "${SD_DEVICE}${i}"; do
+            if [ -b "$cand" ] && [ "$(blkid -s TYPE -o value "$cand" 2>/dev/null || echo unknown)" = "vfat" ]; then
+                BOOT_PART="$cand"
+                break 2
+            fi
+        done
+    done
+
+    if [ -z "$BOOT_PART" ]; then
+        echo "WARNING: no FAT boot partition on ${SD_DEVICE}; boneio.txt not installed."
+        echo "         The flasher still auto-detects the board, but nobody can override it from a PC."
+    else
+        BONEIO_TXT_MNT="/tmp/boneio_txt_boot.$$"
+        mkdir -p "$BONEIO_TXT_MNT"
+        if mount "$BOOT_PART" "$BONEIO_TXT_MNT" 2>/dev/null; then
+            install -m 0644 "$BONEIO_TXT_TEMPLATE" "$BONEIO_TXT_MNT/boneio.txt"
+            sync
+            umount "$BONEIO_TXT_MNT"
+            echo "Installed boneio.txt on the FAT boot partition ($BOOT_PART), all settings commented out"
+        else
+            echo "WARNING: could not mount $BOOT_PART; boneio.txt not installed."
+        fi
+        rmdir "$BONEIO_TXT_MNT" 2>/dev/null || true
+    fi
 fi
 
 # NOW enable cmdline flasher on the SD card's own uEnv.txt

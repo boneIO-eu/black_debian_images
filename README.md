@@ -19,8 +19,8 @@ Narzędzia do budowy i flashowania obrazów Debian dla BoneIO Black (BeagleBone 
 Skrypty budujące obrazy (`generate_all_images.sh`, `create_rootfs_img.sh`,
 `create_flasher_sd.sh`, `build_image_usb.sh`) potrzebują na PC: `util-linux`
 (`losetup`, `partprobe`, `blkid`, `sfdisk`), `parted`, `cloud-guest-utils`
-(`growpart`), `e2fsprogs`, `xz-utils`, opcjonalnie `uv` (auto-refresh cache
-configów z `app_black`) oraz `pishrink.sh`.
+(`growpart`), `e2fsprogs`, `xz-utils`, `uv` (generowanie cache configów
+z `app_black`) oraz `pishrink.sh`.
 
 ```bash
 sudo ./scripts/setup_pc.sh
@@ -28,10 +28,14 @@ sudo ./scripts/setup_pc.sh
 
 Skrypt instaluje wszystkie powyższe (apt) i wypisuje raport co się udało.
 Wymaga systemu opartego o `apt` (Ubuntu/Debian). Jeśli chcesz korzystać
-z auto-refresh cache configów, sklonuj `app_black` obok tego repo (`../app_black`).
+z `generate_all_images.sh`, sklonuj `app_black` obok tego repo (`../app_black`).
+
 Cache configów (`configs/*/config.yaml.cache.pkl`) jest generowany, nie trzymany
-w repo — bez `uv` i `app_black` obraz po prostu wyjdzie bez rozgrzanego cache,
-a aplikacja zbuduje go przy pierwszym starcie.
+w repo. `generate_all_images.sh` przelicza go na świeżo przy każdym budowaniu
+i **przerywa build**, jeśli się nie uda albo jeśli `schema.yaml` w `app_black`
+różni się od tego, który instaluje obraz — w obu przypadkach sterownik odrzuciłby
+cache i walidował config przy pierwszym starcie (20-30 s na BBB). Jeśli świadomie
+godzisz się na wolny pierwszy start, dodaj `--allow-cold-cache`.
 
 ### Krok 1: Przygotowanie bazowego systemu (na BBB)
 

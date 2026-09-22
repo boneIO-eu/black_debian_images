@@ -3,7 +3,10 @@
 # Usage: ./generate_all_images.sh <source_image.img> [version] [--emmc-flasher]
 #
 # Options:
-#   --emmc-flasher    Also generate eMMC flasher images for each variant
+#   --emmc-flasher       Also generate eMMC flasher images for each variant
+#   --allow-cold-cache   Build even if the config caches cannot be warmed.
+#                        The board then validates its config on first boot,
+#                        which costs 20-30 s before it comes up.
 #
 # Example: 
 #   ./generate_all_images.sh rootfs.img 1.0.2
@@ -16,6 +19,7 @@ SOURCE_IMAGE=""
 VERSION="1.0.1"
 GENERATE_EMMC_FLASHER=false
 ONLY_DEVICE=""
+ALLOW_COLD_CACHE=false
 
 while [ $# -gt 0 ]; do
     case $1 in
@@ -26,6 +30,10 @@ while [ $# -gt 0 ]; do
         --only)
             ONLY_DEVICE="$2"
             shift 2
+            ;;
+        --allow-cold-cache)
+            ALLOW_COLD_CACHE=true
+            shift
             ;;
         *)
             if [ -z "$SOURCE_IMAGE" ]; then
@@ -107,6 +115,11 @@ if [ "$GENERATE_EMMC_FLASHER" = true ] && [ ! -f "$FLASHER_INIT" ]; then
     print_error "Required for --emmc-flasher option"
     exit 1
 fi
+
+# The app checkout that generates the config caches, and whose schema.yaml the
+# caches are keyed to. Defined here because apply_device_config verifies against
+# it long before the warming step runs.
+APP_BLACK_DIR="$(realpath "$SCRIPT_DIR/../../app_black" 2>/dev/null || echo "")"
 
 # Mount point
 MOUNT_POINT="/mnt/boneio_image"
@@ -224,6 +237,51 @@ install_flasher_script() {
 # Function to apply device-specific BoneIO config from example_config inside image
 # Finds the config directory in /home/boneio/.cache/boneio_configs, repo configs/, or venv
 # and copies the correct variant's YAML files and cache to /home/boneio/boneio/
+# Confirm the cache we just installed is one the image will load, rather than
+# silently discard. Returns non-zero with an explanation when it will not.
+verify_warm_cache() {
+    local device_name="$1"
+    local boneio_config_dir="$2"
+
+    if [ ! -f "$boneio_config_dir/config.yaml.cache.pkl" ]; then
+        print_error "No config.yaml.cache.pkl for '$device_name' — nothing was warmed."
+        return 1
+    fi
+
+    local host_schema="$APP_BLACK_DIR/boneio/schema/schema.yaml"
+    if [ ! -f "$host_schema" ]; then
+        print_error "Cannot find the schema the cache was built against: $host_schema"
+        return 1
+    fi
+
+    local image_schema=""
+    local candidate
+    for candidate in "$MOUNT_POINT"/home/boneio/boneio/venv/lib/python*/site-packages/boneio/schema/schema.yaml; do
+        if [ -f "$candidate" ]; then
+            image_schema="$candidate"
+            break
+        fi
+    done
+    if [ -z "$image_schema" ]; then
+        print_error "No installed boneio schema.yaml inside the image — cannot tell if the cache is usable."
+        return 1
+    fi
+
+    local host_hash image_hash
+    host_hash="$(sha256sum "$host_schema" | cut -d" " -f1)"
+    image_hash="$(sha256sum "$image_schema" | cut -d" " -f1)"
+    if [ "$host_hash" != "$image_hash" ]; then
+        print_error "Schema mismatch: the cache was built against a different schema.yaml than the image installs."
+        print_error "  cache built with: $host_schema"
+        print_error "  image installs:   $image_schema"
+        print_error "The board would reject the cache and revalidate on first boot."
+        return 1
+    fi
+
+    print_info "Warm cache verified for $device_name (schema ${host_hash:0:12})."
+    return 0
+}
+
 apply_device_config() {
     local device_name="$1"
     local boneio_config_dir="$MOUNT_POINT/home/boneio/boneio"
@@ -271,6 +329,21 @@ apply_device_config() {
     print_info "Applying $device_name config from $example_dir..."
     cp -v "$example_dir"/*.yaml "$boneio_config_dir/"
     cp -v "$example_dir"/*.cache.pkl "$boneio_config_dir/" 2>/dev/null || true
+
+    # A warm cache only counts if the image will actually accept it. boneIO
+    # rejects a cache whose stored schema hash differs from the schema.yaml of
+    # the *installed* package, and it says so at DEBUG level only — so a stale
+    # cache is invisible and the board quietly pays the 20-30 s validation on
+    # first boot anyway. The mismatch to watch for is a schema.yaml edited in
+    # ../app_black but not yet released to the version being installed here.
+    if [ "$ALLOW_COLD_CACHE" != true ]; then
+        if ! verify_warm_cache "$device_name" "$boneio_config_dir"; then
+            print_error "Refusing to ship $device_name with a cache the board will not use."
+            print_error "Release the schema change, or pass --allow-cold-cache."
+            return 1
+        fi
+    fi
+
     
     # Fix ownership (boneio user, UID/GID 1000 typically)
     chown -R 1000:1000 "$boneio_config_dir"/* 2>/dev/null || true
@@ -536,38 +609,95 @@ if [ -n "$ONLY_DEVICE" ]; then
 fi
 echo ""
 
-# Auto-refresh config caches on host PC if app_black is available
-APP_BLACK_DIR="$(realpath "$SCRIPT_DIR/../../app_black" 2>/dev/null || echo "")"
-if command -v uv >/dev/null 2>&1 && [ -n "$APP_BLACK_DIR" ] && [ -d "$APP_BLACK_DIR" ]; then
-    print_info "Refreshing config caches with uv and app_black..."
-    CACHE_REFRESH_LOG="$(mktemp)"
-    if (
-        cd "$APP_BLACK_DIR"
-        uv run python -c "
+# Warm the config caches from app_black, freshly, every build.
+#
+# Validating a config with Cerberus costs 20-30 s on a BeagleBone. The .cache.pkl
+# next to each config.yaml is what buys that back, so a board that has just been
+# flashed answers immediately instead of sitting there on its first boot. That is
+# the whole point of shipping one, so this step is required rather than
+# best-effort: an image that would go out with a cold cache stops the build.
+#
+# Pass --allow-cold-cache if you genuinely do not care about first-boot time.
+refresh_config_caches() {
+    local variants=("$@")
+
+    if [ ! -d "$APP_BLACK_DIR" ]; then
+        print_error "app_black checkout not found next to this repo (expected ../app_black)."
+        print_error "It is what generates the config caches; without it every image ships cold."
+        return 1
+    fi
+    # Look for uv as the user who invoked us before falling back to root's PATH:
+    # under sudo, root's secure_path does not include ~/.local/bin, which is
+    # where uv installs itself by default.
+    local uv_bin=""
+    if [ -n "$SUDO_USER" ]; then
+        uv_bin="$(sudo -u "$SUDO_USER" sh -lc 'command -v uv' 2>/dev/null || true)"
+    fi
+    if [ -z "$uv_bin" ]; then
+        uv_bin="$(command -v uv 2>/dev/null || true)"
+    fi
+    if [ -z "$uv_bin" ]; then
+        print_error "uv not found for the build user, nor on the PATH of this shell."
+        print_error "It is what runs the cache generation; without it every image ships cold."
+        return 1
+    fi
+
+    print_info "Warming config caches for: ${variants[*]}"
+
+    # Run as the invoking user, not root: the caches land inside this repo and a
+    # root-owned .pkl would be the next surprise for whoever builds without sudo.
+    local runner=(env)
+    if [ -n "$SUDO_USER" ]; then
+        runner=(sudo -u "$SUDO_USER" env)
+    fi
+
+    "${runner[@]}" -C "$APP_BLACK_DIR" "$uv_bin" run python -c "
 import os, sys
 sys.path.insert(0, os.getcwd())
 import boneio.core.config.yaml_util as y
 
 base_dir = '$SCRIPT_DIR/../configs'
 failed = []
-for variant in ['32x10', '24x16', 'cover', 'cover_mix', 'tester']:
+for variant in sys.argv[1:]:
     cfg = os.path.join(base_dir, variant, 'config.yaml')
-    if os.path.isfile(cfg):
-        try:
-            y.load_config_from_file(cfg)
-        except Exception as e:
+    if not os.path.isfile(cfg):
+        print(f'[cache-refresh] no config.yaml for {variant}', file=sys.stderr)
+        failed.append(variant)
+        continue
+    try:
+        y.load_config_from_file(cfg)
+    except Exception as e:
+        failed.append(variant)
+        print(f'[cache-refresh] FAILED for {variant}: {e}', file=sys.stderr)
+    else:
+        if not os.path.isfile(cfg + '.cache.pkl'):
             failed.append(variant)
-            print(f'[cache-refresh] FAILED for {variant}: {e}', file=sys.stderr)
+            print(f'[cache-refresh] {variant}: loaded but wrote no cache', file=sys.stderr)
 if failed:
     sys.exit(1)
-"
-    ) >"$CACHE_REFRESH_LOG" 2>&1; then
-        print_info "Config caches refreshed successfully."
-    else
-        print_warning "Config cache refresh failed (or partially failed). The caches are not committed, so any variant that failed ships without one and the app rebuilds it on first boot. Details:"
-        sed 's/^/    /' "$CACHE_REFRESH_LOG"
+" "${variants[@]}"
+}
+
+# Every variant this run will touch. tester is always included: the eMMC flasher
+# image carries the tester config, and --only does not turn that off.
+CACHE_VARIANTS=()
+for device_name in "${DEVICE_TYPES[@]}"; do
+    if [ -z "$ONLY_DEVICE" ] || [ "$device_name" = "$ONLY_DEVICE" ]; then
+        CACHE_VARIANTS+=("$device_name")
     fi
-    rm -f "$CACHE_REFRESH_LOG"
+done
+CACHE_VARIANTS+=("tester")
+
+if refresh_config_caches "${CACHE_VARIANTS[@]}"; then
+    print_info "Config caches warmed."
+elif [ "$ALLOW_COLD_CACHE" = true ]; then
+    print_warning "Config caches NOT warmed — continuing because --allow-cold-cache was given."
+    print_warning "Affected boards will validate their config on first boot (20-30 s)."
+else
+    print_error ""
+    print_error "Refusing to build images that would boot with a cold config cache."
+    print_error "Fix the cause above, or pass --allow-cold-cache to accept a slow first boot."
+    exit 1
 fi
 
 # Process each device type in defined order (32x10 first)

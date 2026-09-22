@@ -4,6 +4,13 @@
 ## Options: --no-cleanup  Skip final cleanup step (for testing on a live system)
 ##          --force       Force re-run all steps (ignore completion markers)
 ##
+## Environment:
+##   BONEIO_VERSION=1.6.0.devN   which boneIO goes into the image
+##   BONEIO_USER_PASSWORD=...    ship a WORKING password for the boneio account
+##                               instead of expiring it. For images that have to
+##                               answer automation. Never for something that
+##                               leaves the building.
+##
 ## This script configures a fresh Debian 13 installation for BoneIO Black hardware.
 ## It will install all required packages, configure services, and prepare the system
 ## for image creation.
@@ -1029,10 +1036,37 @@ fi
 # who knows 'Black' can still log in once and set their own. Closing it fully
 # means shipping no usable password (keys only, or a per-device secret), which
 # is a product decision about how support reaches a customer's device.
+#
+# BONEIO_USER_PASSWORD opts out, for an image that has to answer automation.
+# Ansible, scp, a CI job and the black-tester station all authenticate without
+# a human present, and an expired account stops every one of them dead: sshd
+# asks for a new password and there is nobody to type it. Until now the only
+# way to keep a usable password was --no-cleanup, which also skips truncating
+# the logs, resetting the machine-id and dropping the build-time sudo rule —
+# so the choice was a sealed image nothing can log into, or a usable password
+# on an image that was never sealed.
+#
+#   BONEIO_USER_PASSWORD='something' ./setup_boneio.sh
+#
+# Whatever is set here ships in the image and keeps working until somebody
+# changes it. That is the thing expiry exists to prevent, so it is off by
+# default and says so in the log when it is not.
 if id "${BONEIO_USER}" >/dev/null 2>&1; then
-    chage -d 0 "${BONEIO_USER}" 2>/dev/null \
-        && log_info "   ${BONEIO_USER} must set a new password at first login" \
-        || log_warn "   Could not expire the ${BONEIO_USER} password"
+    if [ -n "${BONEIO_USER_PASSWORD:-}" ]; then
+        if echo "${BONEIO_USER}:${BONEIO_USER_PASSWORD}" | chpasswd 2>/dev/null; then
+            # chpasswd on its own leaves the expiry date alone, and an earlier
+            # run of this script may already have set it to 0. Both have to go.
+            chage -d "$(( $(date +%s) / 86400 ))" "${BONEIO_USER}" 2>/dev/null || true
+            log_warn "   ${BONEIO_USER} ships with a WORKING password (BONEIO_USER_PASSWORD)"
+            log_warn "   It keeps working until someone changes it. Do not ship this image."
+        else
+            log_error "   Could not set the ${BONEIO_USER} password"
+        fi
+    else
+        chage -d 0 "${BONEIO_USER}" 2>/dev/null \
+            && log_info "   ${BONEIO_USER} must set a new password at first login" \
+            || log_warn "   Could not expire the ${BONEIO_USER} password"
+    fi
 fi
 
 # Clear bash history

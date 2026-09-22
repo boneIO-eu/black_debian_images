@@ -27,12 +27,20 @@
 #       SD card. Only ever touches the SD card. Set it empty to leave the
 #       account expired and give up the serial read.
 #
-#   BONEIO_USER_ON_EMMC=<password>
+#   BONEIO_EMMC_PASSWORD=<password>
 #       Sets a working password for the boneio account on the eMMC that was
 #       just flashed. Off by default, and off is the right answer for anything
 #       that leaves the building: the image deliberately ships the account
 #       expired so the shipped password cannot keep working on a device in
 #       use. Set it only for boards that stay on the bench.
+#
+#       The two password settings differ by which disk they touch, which is
+#       the only thing worth remembering about them:
+#         BONEIO_STATION_PASSWORD  → the SD card you booted from
+#         BONEIO_EMMC_PASSWORD     → the eMMC you just wrote
+#
+#       Neither helps an image built by setup_boneio.sh and booted straight
+#       from a card; that one takes BONEIO_USER_PASSWORD at build time.
 #
 # Run with --help to print this.
 #
@@ -827,16 +835,16 @@ RCEOF
 	# stops working after the first interactive login, so it cannot quietly
 	# keep working on a customer device for years. Setting this gives that up
 	# for the flashed board, which is why it says so in the log.
-	if [ -n "${BONEIO_USER_ON_EMMC:-}" ]; then
+	if [ -n "${BONEIO_EMMC_PASSWORD:-}" ]; then
 		if [ -f /tmp/rootfs/etc/shadow ]; then
 			if chroot /tmp/rootfs /bin/sh -c \
-				"echo 'boneio:${BONEIO_USER_ON_EMMC}' | chpasswd" 2>/dev/null; then
+				"echo 'boneio:${BONEIO_EMMC_PASSWORD}' | chpasswd" 2>/dev/null; then
 				# Undo the expiry the image ships with, or the password is set
 				# and still unusable without an interactive change.
 				chroot /tmp/rootfs chage -d "$(( $(date +%s) / 86400 ))" boneio 2>/dev/null || true
 				message="WARN: ===============================================" ; broadcast
 				message="WARN: eMMC ships with a WORKING boneio password" ; broadcast
-				message="WARN: BONEIO_USER_ON_EMMC was set, so the account is" ; broadcast
+				message="WARN: BONEIO_EMMC_PASSWORD was set, so the account is" ; broadcast
 				message="WARN: no longer expired. Bench boards only." ; broadcast
 				message="WARN: ===============================================" ; broadcast
 			else

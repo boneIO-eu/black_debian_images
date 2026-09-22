@@ -33,11 +33,23 @@
 #   non-interactive login dead, so station mode re-arms it — on the SD card
 #   only. Leave it empty to keep the account expired and give up the serial.
 #
-# BONEIO_USER_ON_EMMC=<password>
+# BONEIO_EMMC_PASSWORD=<password>
 #   Sets a working password for boneio on the eMMC that was just flashed.
 #   Leave it unset for anything that leaves the building: the image expires
 #   the account so the shipped password cannot keep working on a device in
 #   use, and this gives that up. Bench boards only.
+#
+#   The two settings differ by which disk they touch:
+#     BONEIO_STATION_PASSWORD  → the SD card you booted from
+#     BONEIO_EMMC_PASSWORD     → the eMMC you just wrote
+#
+#   Neither applies to an image built by setup_boneio.sh and booted straight
+#   from a card. That one takes BONEIO_USER_PASSWORD at build time.
+#
+# A note on being locked out: expiring the account does not lock it. sshd runs
+# with UsePAM yes, so an expired password is accepted once and a new one is
+# demanded on the spot. You can always get in by hand with the shipped
+# password. What expiry stops is automation, which has nobody to type it.
 #
 # BONEIO_FLASHER_STATION=1
 

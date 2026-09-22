@@ -233,7 +233,8 @@ apply_device_config() {
         return 1
     fi
     
-    # 1. Check repo configs/ directory (has latest YAMLs + pre-generated .cache.pkl)
+    # 1. Check repo configs/ directory (latest YAMLs, plus a .cache.pkl if the
+    #    refresh above rebuilt one — the caches are generated, not committed)
     local example_dir=""
     if [ -d "$SCRIPT_DIR/../configs/$device_name" ]; then
         example_dir="$SCRIPT_DIR/../configs/$device_name"
@@ -563,7 +564,7 @@ if failed:
     ) >"$CACHE_REFRESH_LOG" 2>&1; then
         print_info "Config caches refreshed successfully."
     else
-        print_warning "Config cache refresh failed (or partially failed) — falling back to the committed .cache.pkl files. Details:"
+        print_warning "Config cache refresh failed (or partially failed). The caches are not committed, so any variant that failed ships without one and the app rebuilds it on first boot. Details:"
         sed 's/^/    /' "$CACHE_REFRESH_LOG"
     fi
     rm -f "$CACHE_REFRESH_LOG"

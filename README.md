@@ -29,6 +29,9 @@ sudo ./scripts/setup_pc.sh
 Skrypt instaluje wszystkie powyższe (apt) i wypisuje raport co się udało.
 Wymaga systemu opartego o `apt` (Ubuntu/Debian). Jeśli chcesz korzystać
 z auto-refresh cache configów, sklonuj `app_black` obok tego repo (`../app_black`).
+Cache configów (`configs/*/config.yaml.cache.pkl`) jest generowany, nie trzymany
+w repo — bez `uv` i `app_black` obraz po prostu wyjdzie bez rozgrzanego cache,
+a aplikacja zbuduje go przy pierwszym starcie.
 
 ### Krok 1: Przygotowanie bazowego systemu (na BBB)
 

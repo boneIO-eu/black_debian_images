@@ -16,3 +16,10 @@ scripts/test_*.sh
 # Local pointer so Claude Code picks up AGENTS.md; the rules themselves are
 # in AGENTS.md, which is tracked.
 CLAUDE.md
+
+# Generated config caches. boneIO rebuilds these from config.yaml whenever the
+# hash stops matching, so a committed copy was only ever a head start — and one
+# that showed up as a dirty tree after every local run. generate_all_images.sh
+# refreshes them from ../app_black before it builds; without that checkout an
+# image simply ships without a warm cache and the app builds one on first boot.
+configs/*/config.yaml.cache.pkl

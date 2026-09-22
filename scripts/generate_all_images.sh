@@ -242,6 +242,12 @@ install_flasher_script() {
 # Function to apply device-specific BoneIO config from example_config inside image
 # Finds the config directory in /home/boneio/.cache/boneio_configs, repo configs/, or venv
 # and copies the correct variant's YAML files and cache to /home/boneio/boneio/
+# Read __version__ out of a boneio/version.py, empty if it cannot be read.
+read_boneio_version() {
+    [ -f "$1" ] || return 0
+    sed -n 's/^__version__[[:space:]]*=[[:space:]]*["'"'"']\(.*\)["'"'"'].*/\1/p' "$1" | head -1
+}
+
 # Confirm the cache we just installed is one the image will load, rather than
 # silently discard. Returns non-zero with an explanation when it will not.
 verify_warm_cache() {
@@ -283,7 +289,55 @@ verify_warm_cache() {
         return 1
     fi
 
-    print_info "Warm cache verified for $device_name (schema ${host_hash:0:12})."
+    # The schema is only half of it. The cache payload is pickled boneIO
+    # objects, so boneIO also refuses a cache whose stored version is not its
+    # own: a release that moves or renames a class leaves config.yaml and
+    # schema.yaml untouched, and their hashes therefore still matching, while
+    # the pickle can no longer be read back at all. The cache here is warmed by
+    # running ../app_black in place, so its version is the checkout's, not the
+    # one the image installs.
+    local image_boneio host_version image_version cache_version
+    image_boneio="$(dirname "$(dirname "$image_schema")")"
+    host_version="$(read_boneio_version "$APP_BLACK_DIR/boneio/version.py")"
+    image_version="$(read_boneio_version "$image_boneio/version.py")"
+
+    if [ -z "$image_version" ]; then
+        print_error "Cannot read the boneIO version the image installs ($image_boneio/version.py)."
+        return 1
+    fi
+    if [ "$host_version" != "$image_version" ]; then
+        print_error "Version mismatch: the cache was warmed by boneIO $host_version, the image installs $image_version."
+        print_error "  cache warmed by: $APP_BLACK_DIR ($host_version)"
+        print_error "  image installs:  $image_version"
+        print_error "The board would reject the cache and revalidate on first boot."
+        return 1
+    fi
+
+    # And the cache on disk really does carry that version: a .pkl left over
+    # from an older app_black has no version field at all, and the board treats
+    # that as a miss too.
+    cache_version="$(python3 -c '
+import pickle, sys
+try:
+    with open(sys.argv[1], "rb") as f:
+        header = pickle.load(f)
+except Exception:
+    sys.exit(0)
+print(header.get("version", "") if isinstance(header, dict) else "")
+' "$boneio_config_dir/config.yaml.cache.pkl" 2>/dev/null || true)"
+
+    if [ "$cache_version" != "$image_version" ]; then
+        if grep -q "_CACHE_FOREIGN_BUILD_ERRORS" "$image_boneio/core/config/yaml_util.py" 2>/dev/null; then
+            print_error "The cache for '$device_name' carries version '${cache_version:-<none>}', the image installs $image_version."
+            print_error "It was written by an app_black without the version field, or by a different build."
+            print_error "The board would reject it and revalidate on first boot."
+            return 1
+        fi
+        # An image from before the version gate reads the cache regardless.
+        print_warning "Cache for '$device_name' has no version field; the image installs a boneIO that does not check one."
+    fi
+
+    print_info "Warm cache verified for $device_name (boneIO $image_version, schema ${host_hash:0:12})."
     return 0
 }
 

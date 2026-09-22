@@ -61,8 +61,13 @@ SCRIPT_VERSION="2026-09-21.1"
 # dependency. An exact `==` on a pre-release version is honoured by pip without
 # `--pre`, which is exactly the narrow permission wanted here.
 #
-# Override for a one-off build:  BONEIO_VERSION=1.6.0.dev11 ./setup_boneio.sh
-BONEIO_VERSION="${BONEIO_VERSION:-1.6.0.dev10}"
+# Override for a one-off build:  BONEIO_VERSION=1.6.0.devN ./setup_boneio.sh
+#
+# Bumping this is what carries app changes into a new image. The flasher script
+# is copied from this repo when a card is written, so changes there need no new
+# image — but anything in the boneIO application does, and that is what this
+# line decides.
+BONEIO_VERSION="${BONEIO_VERSION:-1.6.0.dev11}"
 
 # --- Idempotent step markers ---
 MARKER_DIR="/var/lib/boneio/.setup.d"

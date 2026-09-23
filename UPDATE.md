@@ -9,7 +9,7 @@ ssh boneio@<adres_ip>
 # Hasło to hasło admina z kreatora pierwszego uruchomienia — patrz "Dane dostępowe" niżej.
 
 # Aktualizacja boneIO do wskazanej wersji
-~/boneio/venv/bin/pip install --upgrade "boneio==1.6.0.dev10"
+~/boneio/venv/bin/pip install --upgrade "boneio==1.6.0.dev13"
 
 # Restart usługi
 sudo systemctl restart BoneIO

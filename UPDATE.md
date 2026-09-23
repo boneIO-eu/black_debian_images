@@ -6,7 +6,7 @@ Zaloguj się na urządzenie przez SSH i uruchom:
 
 ```bash
 ssh boneio@<adres_ip>
-# Hasło ustawiasz sam przy pierwszym logowaniu — patrz "Dane dostępowe" niżej.
+# Hasło to hasło admina z kreatora pierwszego uruchomienia — patrz "Dane dostępowe" niżej.
 
 # Aktualizacja boneIO do wskazanej wersji
 ~/boneio/venv/bin/pip install --upgrade "boneio==1.6.0.dev10"
@@ -69,12 +69,20 @@ urządzeniu — znajomość jednego sterownika oznaczała znajomość wszystkich
 
 | Usługa | Login | Hasło |
 |--------|-------|-------|
-| SSH | `boneio` | ustawiasz przy pierwszym logowaniu (hasło z obrazu jest wygaszone) |
+| SSH | `boneio` | to samo, co hasło administratora z kreatora pierwszego uruchomienia; do tego czasu logowanie hasłem jest zablokowane |
 | MQTT | `boneio` | losowe, per urządzenie — panel zna je sam, Ty nie musisz |
 | MQTT | `homeassistant`, `mqtt` | losowe, do podmiany na własne w **Ustawienia → MQTT** |
 
 Panel może zmienić wszystkie trzy hasła MQTT bez podawania hasła systemowego,
 więc nic nie tracisz na tym, że ich nie znasz.
+
+Hasło SSH ustawia się **raz**, w kreatorze. Późniejsza zmiana hasła w panelu go
+nie zmienia — do tego służy `passwd` po zalogowaniu przez SSH, który pyta o
+obecne hasło. Konto `boneio` może zostać rootem, więc to hasło chroni całe
+urządzenie.
+
+Urządzenia zaktualizowane ze starszych obrazów mogą nadal mieć `Black`. Sekcja
+bezpieczeństwa w panelu to wykrywa; zmień je przez `passwd`.
 
 ## Porty sieciowe
 

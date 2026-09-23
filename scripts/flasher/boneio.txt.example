@@ -30,15 +30,15 @@
 #
 #   BONEIO_STATION_PASSWORD=Black
 #     Station mode only. The password black-tester uses over SSH to read the
-#   board serial. The image expires this account on purpose, which stops a
-#   non-interactive login dead, so station mode re-arms it — on the SD card
-#   only. Leave it empty to keep the account expired and give up the serial.
+#   board serial. The image locks this account on purpose, so no password
+#   works at all, and station mode sets this one — on the SD card only. Leave
+#   it empty to keep the account locked and give up the serial.
 #
 #   BONEIO_EMMC_PASSWORD=<some-password>
 #     Sets a working password for boneio on the eMMC that was just flashed.
-#   Leave it unset for anything that leaves the building: the image expires
-#   the account so the shipped password cannot keep working on a device in
-#   use, and this gives that up. Bench boards only.
+#   Leave it unset for anything that leaves the building: the image locks
+#   the account so the owner's first password, from the first-run wizard,
+#   becomes it — and this gives that up. Bench boards only.
 #
 #   The two settings differ by which disk they touch:
 #     BONEIO_STATION_PASSWORD  → the SD card you booted from
@@ -47,10 +47,12 @@
 #   Neither applies to an image built by setup_boneio.sh and booted straight
 #   from a card. That one takes BONEIO_USER_PASSWORD at build time.
 #
-# A note on being locked out: expiring the account does not lock it. sshd runs
-# with UsePAM yes, so an expired password is accepted once and a new one is
-# demanded on the spot. You can always get in by hand with the shipped
-# password. What expiry stops is automation, which has nobody to type it.
+# A note on being locked out: on a board flashed without either setting, no
+# password logs in as boneio — not 'Black', not anything — until the owner
+# runs the first-run wizard, whose administrator password becomes the SSH one.
+# That is the point. Earlier images only expired the account, which let whoever
+# logged in first with the shipped password choose the next one. For a bench
+# board you need to reach before that, set BONEIO_EMMC_PASSWORD.
 # ---------------------------------------------------------------------------
 # THE SETTINGS ARE THE BLOCK BELOW. Everything above is documentation, and its
 # examples are indented for exactly that reason: only a line starting with

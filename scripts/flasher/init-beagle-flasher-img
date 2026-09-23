@@ -22,17 +22,17 @@
 #
 #   BONEIO_STATION_PASSWORD=Black
 #       Station mode only. The password black-tester uses over SSH to read the
-#       board serial. The shipped image expires the account on purpose, which
-#       stops a non-interactive login dead, so station mode re-arms it on the
-#       SD card. Only ever touches the SD card. Set it empty to leave the
-#       account expired and give up the serial read.
+#       board serial. The shipped image locks the account on purpose, so no
+#       password works at all, and station mode sets this one on the SD card.
+#       Only ever touches the SD card. Set it empty to leave the account
+#       locked and give up the serial read.
 #
 #   BONEIO_EMMC_PASSWORD=<password>
 #       Sets a working password for the boneio account on the eMMC that was
 #       just flashed. Off by default, and off is the right answer for anything
 #       that leaves the building: the image deliberately ships the account
-#       expired so the shipped password cannot keep working on a device in
-#       use. Set it only for boards that stay on the bench.
+#       locked, so the owner's first password from the first-run wizard
+#       becomes it. Set it only for boards that stay on the bench.
 #
 #       The two password settings differ by which disk they touch, which is
 #       the only thing worth remembering about them:
@@ -854,10 +854,10 @@ RCEOF
 	# Optional: a working password on the eMMC that was just written.
 	#
 	# Off by default, and off is right for anything that leaves the building.
-	# The image expires this account on purpose (F-04): the shipped password
-	# stops working after the first interactive login, so it cannot quietly
-	# keep working on a customer device for years. Setting this gives that up
-	# for the flashed board, which is why it says so in the log.
+	# The image locks this account on purpose (F-04): no password logs in until
+	# the owner's first one, from the first-run wizard, is set. Setting this
+	# gives that up for the flashed board, which is why it says so in the log.
+	# chpasswd replaces the hash, so it clears the lock as well.
 	if [ -n "${BONEIO_EMMC_PASSWORD:-}" ]; then
 		if [ -f /tmp/rootfs/etc/shadow ]; then
 			if chroot /tmp/rootfs /bin/sh -c \
@@ -868,7 +868,7 @@ RCEOF
 				message="WARN: ===============================================" ; broadcast
 				message="WARN: eMMC ships with a WORKING boneio password" ; broadcast
 				message="WARN: BONEIO_EMMC_PASSWORD was set, so the account is" ; broadcast
-				message="WARN: no longer expired. Bench boards only." ; broadcast
+				message="WARN: no longer locked. Bench boards only." ; broadcast
 				message="WARN: ===============================================" ; broadcast
 			else
 				message="ERROR: Could not set the eMMC boneio password" ; broadcast
@@ -889,15 +889,16 @@ RCEOF
 # Make the SD card system answer black-tester. Two things stop it by default,
 # and both are deliberate everywhere except here.
 station_prepare_sd_for_tester () {
-	# 1. The account is shipped expired (chage -d 0, see setup_boneio.sh). That
-	#    is the right posture for a product — it stops the shipped password
-	#    working forever on a device in use — but sshd then demands a new
-	#    password at login, which a non-interactive paramiko session cannot
-	#    give. black-tester reads the board serial over SSH, so without this it
-	#    reports no serial and the board cannot be matched to its test.
+	# 1. The account is shipped locked (passwd -l, see setup_boneio.sh). That
+	#    is the right posture for a product — nobody can log in with a password
+	#    until the owner's first one, from the first-run wizard, is set — but
+	#    it also means black-tester, which reads the board serial over SSH, has
+	#    nothing to log in with. Without this it reports no serial and the board
+	#    cannot be matched to its test. chpasswd replaces the hash, which clears
+	#    the lock too.
 	#
 	#    Only the SD card is touched. The eMMC that was just written keeps the
-	#    expired account.
+	#    locked account.
 	if [ -n "${BONEIO_STATION_PASSWORD:-Black}" ]; then
 		local station_pw="${BONEIO_STATION_PASSWORD:-Black}"
 		if echo "boneio:${station_pw}" | chpasswd 2>/dev/null; then
@@ -909,7 +910,7 @@ station_prepare_sd_for_tester () {
 			message="WARN: Could not set the SD card boneio password; the tester will not read the serial" ; broadcast
 		fi
 	else
-		message="INFO: BONEIO_STATION_PASSWORD empty — leaving the account expired" ; broadcast
+		message="INFO: BONEIO_STATION_PASSWORD empty — leaving the account locked" ; broadcast
 	fi
 
 	# 2. A device with no administrator account answers 403 "setup_required" to

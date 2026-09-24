@@ -50,7 +50,7 @@ log_skip() { echo -e "${BLUE}[SKIP]${NC} $1"; }
 
 BONEIO_USER="${BONEIO_USER:-boneio}"
 BONEIO_HOME="/home/${BONEIO_USER}"
-SCRIPT_VERSION="2026-09-21.1"
+SCRIPT_VERSION="2026-09-24.1"
 
 # Which boneIO goes into the image.
 #
@@ -325,6 +325,22 @@ else
         wireguard-tools \
         firmware-ti-connectivity \
         wget 2>/dev/null || true
+
+    # PackageKit and AppStream: purged, not removed. Their apt hooks are
+    # conffiles (/etc/apt/apt.conf.d/20packagekit, 50appstream), and a plain
+    # remove leaves them behind. 20packagekit pings packagekitd over D-Bus
+    # after every apt update and dpkg run with a 4 s timeout the BeagleBone
+    # cannot meet ("Error: Timeout was reached" in the panel's update log);
+    # 50appstream downloads DEP-11 metadata on every update. Nothing boneIO
+    # runs uses either. Same list as boneIO migration 1.6.20, which does this
+    # on devices already in the field — keep the two the same.
+    apt-get purge -y \
+        cockpit-packagekit \
+        packagekit-tools \
+        packagekit \
+        libpackagekit-glib2-18 \
+        appstream \
+        libappstream5 2>/dev/null || true
     apt autoremove -y
     apt-get clean
     step_mark "step3_apt_remove"

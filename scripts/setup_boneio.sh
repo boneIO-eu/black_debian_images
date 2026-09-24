@@ -50,7 +50,7 @@ log_skip() { echo -e "${BLUE}[SKIP]${NC} $1"; }
 
 BONEIO_USER="${BONEIO_USER:-boneio}"
 BONEIO_HOME="/home/${BONEIO_USER}"
-SCRIPT_VERSION="2026-09-24.1"
+SCRIPT_VERSION="2026-09-24.2"
 
 # Which boneIO goes into the image.
 #
@@ -365,9 +365,14 @@ else
         [ "$i" = "1" ] && log_info "   Waiting for dpkg lock to be released..."
         sleep 1
     done
-    systemctl disable apt-daily-upgrade.timer 2>/dev/null || true
+    # The apt timers are NOT disabled any more. They run the automatic
+    # security updates (boneIO migration 1.6.22: Debian-Security only, never a
+    # reboot, switchable in the panel), which is why they are on by default.
+    # 1.6.22 also drops their boot-time catch-up and lowers their CPU weight,
+    # which was the reason they used to be switched off. Stopping them above
+    # is only so they do not hold the dpkg lock while this script runs.
+    # unattended-upgrades.service is the install-on-shutdown hook, not used.
     systemctl disable unattended-upgrades.service 2>/dev/null || true
-    systemctl disable apt-daily.timer 2>/dev/null || true
     # Boot speed: iwd (WiFi manager, BBB has no WiFi) ~4.6s
     systemctl disable --now iwd.service 2>/dev/null || true
     # Boot speed: cockpit (web admin, boneIO has its own UI) ~1.9s

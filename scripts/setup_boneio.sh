@@ -833,16 +833,29 @@ chown -R ${BONEIO_USER}:${BONEIO_USER} ${BONEIO_HOME} 2>/dev/null || true
 
 log_info "   BoneIO application installed"
 
-# Copy docker-compose.yaml from package (migration doesn't install it to avoid
-# overwriting cloud users' compose on upgrade — but new installs need it)
-log_info "   Installing docker-compose.yaml from package..."
-cd /tmp
-${BONEIO_HOME}/boneio/venv/bin/python3 -c "
-from importlib.resources import files
-src = files('boneio.core.cloud.data').joinpath('docker-compose.yaml')
-print(src.read_text(), end='')
-" > ${BONEIO_HOME}/docker/nodered/docker-compose.yaml
-chown ${BONEIO_USER}:${BONEIO_USER} ${BONEIO_HOME}/docker/nodered/docker-compose.yaml
+# The compose file has to be root-owned: boneio-containers refuses every verb
+# that runs compose otherwise, since whoever can write the file can start a
+# container as root with the host mounted. The migrations installed and rooted
+# it, but the chown -R above just handed it back to boneio — so put it back
+# from the trusted template, after that chown and not before it.
+#
+# This used to copy boneio/core/cloud/data/docker-compose.yaml and chown it to
+# boneio. That copy had fallen behind the template (no WEB_PORT, so Caddy
+# proxied to 8090 whatever web.port said) and the chown left the panel unable
+# to restart its own containers.
+COMPOSE_LIVE="${BONEIO_HOME}/docker/nodered/docker-compose.yaml"
+COMPOSE_TRUSTED="/usr/lib/boneio/trusted/docker-compose.yaml"
+if [ -f "$COMPOSE_TRUSTED" ]; then
+    log_info "   Installing docker-compose.yaml from ${COMPOSE_TRUSTED}..."
+    install -o root -g root -m 0644 "$COMPOSE_TRUSTED" "$COMPOSE_LIVE"
+else
+    # No trusted template means the migrations did not run, and the device is
+    # missing its hardening anyway. Still give it the current template rather
+    # than an old one.
+    log_warn "   ${COMPOSE_TRUSTED} missing — did the migrations run? Using the package template"
+    COMPOSE_ASSET=$(echo ${BONEIO_HOME}/boneio/venv/lib/python*/site-packages/boneio/migrations/assets/docker/nodered/docker-compose.yaml)
+    install -o root -g root -m 0644 "$COMPOSE_ASSET" "$COMPOSE_LIVE"
+fi
 
 # Pull Docker images so Node-RED + Caddy work out of the box
 log_info "   Starting Docker daemon..."

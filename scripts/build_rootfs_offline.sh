@@ -103,6 +103,7 @@ cleanup() {
     # which never exits, and the cleanup would hang.
     [ -n "$jobs_left" ] && wait $jobs_left 2>/dev/null
     rm -f  "$MNT/etc/sudoers.d/zz-offline-build" 2>/dev/null
+    rm -f  "$MNT/etc/initramfs-tools/conf.d/zz-boneio-offline-build" 2>/dev/null
     rm -rf "$MNT/root/boneio-build" 2>/dev/null
     umount "$MNT/boot/firmware" 2>/dev/null
     umount "$MNT" 2>/dev/null
@@ -178,6 +179,18 @@ cp -P "$MNT/etc/resolv.conf" "$RESOLV_BAK" 2>/dev/null || true
 printf 'Defaults env_keep += "SYSTEMD_OFFLINE"\n' > "$MNT/etc/sudoers.d/zz-offline-build"
 chmod 0440 "$MNT/etc/sudoers.d/zz-offline-build"
 
+# The initramfs fsck hook probes the root device named in fstab,
+# /dev/mmcblk0p3, which does not exist here — so it left fsck out of the
+# initramfs. Given FSTYPE it takes the type from the setting instead. It has to
+# be a conf.d file: initramfs.conf sets FSTYPE=auto itself and overrides the
+# environment. The file is copied into the initramfs built here, where it tells
+# the boot scripts the root is ext4 — which it is; on a BeagleBone "auto"
+# finds the same. Removed after setup, so the next kernel update on the
+# device goes back to auto.
+OFFLINE_INITRAMFS_CONF="$MNT/etc/initramfs-tools/conf.d/zz-boneio-offline-build"
+printf '# Build-time only (build_rootfs_offline.sh); removed after setup.\nFSTYPE=ext4\n' \
+    > "$OFFLINE_INITRAMFS_CONF"
+
 # Downloads kept between builds, outside the image: .deb files by name and
 # SHA256, and pip's cache bind-mounted where pip looks for it. A second build
 # fetches only what is new. Override with BUILD_CACHE=/somewhere.
@@ -201,12 +214,6 @@ fi
 # SYSTEMD_OFFLINE=1: systemctl enable/disable edit symlinks offline, and
 # start/stop/restart/reload are ignored instead of failing under set -e.
 #
-# FSTYPE=ext4: the initramfs fsck hook probes the root device named in fstab,
-# /dev/mmcblk0p3, which does not exist here — so it left fsck out of the
-# initramfs. Given FSTYPE it takes the type from there instead. An environment
-# variable rather than a conf.d file, so nothing of it is copied into the
-# initramfs or left in the image.
-#
 # stdin is /dev/null and the console a pipe: nothing in here may wait for a
 # person. A prompt gets end-of-file and fails at once, with its question in
 # the log, instead of hanging the build (the first run sat on passwd).
@@ -218,7 +225,6 @@ nsp() {
         --setenv=DEBIAN_FRONTEND=noninteractive \
         --setenv=NEEDRESTART_MODE=a \
         --setenv=LANG=C.UTF-8 \
-        --setenv=FSTYPE=ext4 \
         "$@" </dev/null
 }
 
@@ -415,6 +421,7 @@ nsp "${SETUP_ENV[@]}" --chdir=/root/boneio-build/scripts \
 [ -n "$IPT_ALT_IP4" ] && nsp update-alternatives --set iptables "$IPT_ALT_IP4" >/dev/null
 [ -n "$IPT_ALT_IP6" ] && nsp update-alternatives --set ip6tables "$IPT_ALT_IP6" >/dev/null
 [ "$SETUP_RC" -eq 0 ] || die "setup_boneio.sh failed (rc=$SETUP_RC) — see the log above"
+rm -f "$OFFLINE_INITRAMFS_CONF"
 
 # ─── 5. Verify ───────────────────────────────────────────────────────────────
 
@@ -458,6 +465,7 @@ else:
 PYEOF
 )
 info "  initramfs $TARGET_KERNEL: ${INITRD_REPORT}"
+check "build-only initramfs conf removed"    "[ ! -e '$OFFLINE_INITRAMFS_CONF' ]"
 check "initramfs has fsck.ext4"             "[ '${INITRD_REPORT#* }' = fsck ]"
 check "initramfs has >= 300 modules"        "[ '${INITRD_REPORT%% *}' -ge 300 ]"
 check "exactly one overlay line"             "[ \$(grep -c '^uboot_overlay_addr0=.*BONEIO-BLACK-PINS' '$UENV') -eq 1 ]"

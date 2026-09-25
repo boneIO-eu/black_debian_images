@@ -211,7 +211,16 @@ nsp() {
 # ─── 3. dist-upgrade ─────────────────────────────────────────────────────────
 
 phase "3/6 apt dist-upgrade (armhf under qemu-user)"
-nsp apt-get update
+# A few tries: the BeagleBoard archive is republished in place, and a build
+# that lands mid-sync gets "File has unexpected size … Mirror sync in
+# progress?" for a minute or two. Failing for good after that is right —
+# building on lists apt refused would be building on whatever it had before.
+for attempt in 1 2 3 4; do
+    nsp apt-get update && break
+    [ "$attempt" -lt 4 ] || die "apt-get update kept failing — see above"
+    warn "apt-get update failed (attempt $attempt/4); retrying in 45 s"
+    sleep 45
+done
 
 # Downloads run on the host. apt's own transfer under qemu-user crawled at
 # 8-16 kB/s on the first build (a 39 MB kernel: 40 minutes) while the host

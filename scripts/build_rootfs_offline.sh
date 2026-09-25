@@ -106,6 +106,11 @@ cleanup() {
     rm -rf "$MNT/root/boneio-build" 2>/dev/null
     umount "$MNT/boot/firmware" 2>/dev/null
     umount "$MNT" 2>/dev/null
+    if [ -n "${DIR_INDEX_OFF:-}" ] && [ -n "$LOOP" ]; then
+        tune2fs -O dir_index "$ROOT_PART" >/dev/null
+        e2fsck -fyD "$ROOT_PART" >/dev/null 2>&1
+        DIR_INDEX_OFF=""
+    fi
     [ -n "$LOOP" ] && losetup -d "$LOOP" 2>/dev/null
     rmdir "$MNT" 2>/dev/null
 }
@@ -131,6 +136,22 @@ BOOT_PART="${LOOP}p1"
 
 e2fsck -f -y "$ROOT_PART" || [ $? -le 1 ] || die "e2fsck failed"
 resize2fs "$ROOT_PART"
+
+# qemu-user runs the image's 32-bit ARM programs as a 64-bit process, and ext4
+# hands a 64-bit process 64-bit directory offsets from its hashed (dir_index)
+# directories. A 32-bit program cannot hold them, so reading a directory fails
+# silently while opening a file by name works. The first builds lost two
+# thirds of the initramfs that way: dracut-install walks =drivers/rtc and the
+# like, found nothing, and the image shipped 109 modules where a BeagleBone
+# builds 340 — measured, same files: 87 found on tmpfs, 0 on ext4. With
+# dir_index off, directories are read linearly with small offsets. cleanup()
+# turns it back on and rebuilds the indexes (e2fsck -D), so the image leaves
+# with the layout it came with.
+DIR_INDEX_OFF=""
+if dumpe2fs -h "$ROOT_PART" 2>/dev/null | grep -q '^Filesystem features:.*dir_index'; then
+    tune2fs -O ^dir_index "$ROOT_PART" >/dev/null
+    DIR_INDEX_OFF=1
+fi
 
 # ─── 2. Mount + stage ────────────────────────────────────────────────────────
 
@@ -166,6 +187,12 @@ mkdir -p "$BUILD_CACHE/apt" "$BUILD_CACHE/pip"
 # SYSTEMD_OFFLINE=1: systemctl enable/disable edit symlinks offline, and
 # start/stop/restart/reload are ignored instead of failing under set -e.
 #
+# FSTYPE=ext4: the initramfs fsck hook probes the root device named in fstab,
+# /dev/mmcblk0p3, which does not exist here — so it left fsck out of the
+# initramfs. Given FSTYPE it takes the type from there instead. An environment
+# variable rather than a conf.d file, so nothing of it is copied into the
+# initramfs or left in the image.
+#
 # stdin is /dev/null and the console a pipe: nothing in here may wait for a
 # person. A prompt gets end-of-file and fails at once, with its question in
 # the log, instead of hanging the build (the first run sat on passwd).
@@ -177,6 +204,7 @@ nsp() {
         --setenv=DEBIAN_FRONTEND=noninteractive \
         --setenv=NEEDRESTART_MODE=a \
         --setenv=LANG=C.UTF-8 \
+        --setenv=FSTYPE=ext4 \
         "$@" </dev/null
 }
 
@@ -247,6 +275,11 @@ fetch_deb() {
         hash=""; sumtool=""
         if   [[ "$rest" =~ SHA512:([0-9a-f]{128}) ]]; then hash="${BASH_REMATCH[1]}"; sumtool=sha512sum
         elif [[ "$rest" =~ SHA256:([0-9a-f]{64})  ]]; then hash="${BASH_REMATCH[1]}"; sumtool=sha256sum
+        # The BeagleBoard archives get only an MD5 in --print-uris. Good enough
+        # to tell a finished download from a broken one; it is not what trusts
+        # the package — apt checks each file against the signed Packages lists
+        # again before it installs anything.
+        elif [[ "$rest" =~ MD5Sum:([0-9a-f]{32})  ]]; then hash="${BASH_REMATCH[1]}"; sumtool=md5sum
         fi
         if [ -z "$hash" ]; then
             echo "  cannot read a hash for $file — apt will fetch it (apt said: ${rest:0:80})"
@@ -370,6 +403,40 @@ UENV="$MNT/boot/firmware/uEnv.txt"; [ -f "$UENV" ] || UENV="$MNT/boot/uEnv.txt"
 check "kernel $TARGET_KERNEL present"        "[ -f '$MNT/boot/vmlinuz-$TARGET_KERNEL' ] && [ -f '$MNT/boot/initrd.img-$TARGET_KERNEL' ]"
 check "uEnv uname_r = $TARGET_KERNEL"        "grep -qx 'uname_r=$TARGET_KERNEL' '$MNT/boot/uEnv.txt'"
 check "overlay in /boot/dtbs/$TARGET_KERNEL" "ls '$MNT/boot/dtbs/$TARGET_KERNEL'/BONEIO-BLACK-PINS-*.dtbo >/dev/null 2>&1"
+# The initramfs of the kernel that boots: fsck for the root filesystem, and as
+# many modules as a BeagleBone puts in (340 for 6.18.53-bone55 on the dev
+# controller). Both went missing silently in earlier builds.
+INITRD_REPORT=$(python3 - "$MNT/boot/initrd.img-$TARGET_KERNEL" <<'PYEOF' 2>/dev/null || echo "0 unreadable"
+import subprocess, sys
+data = open(sys.argv[1], "rb").read()
+off, modules = 0, 0
+while data[off:off + 6] == b"070701":          # uncompressed early archives
+    head = data[off:off + 110]
+    namesize, filesize = int(head[94:102], 16), int(head[54:62], 16)
+    name = data[off + 110:off + 110 + namesize - 1].decode()
+    off = (off + 110 + namesize + 3) & ~3
+    off = (off + filesize + 3) & ~3
+    if name == "TRAILER!!!":
+        while off < len(data) and data[off] == 0:
+            off += 1
+    elif name.endswith((".ko", ".ko.xz", ".ko.zst")):
+        modules += 1
+rest = data[off:]
+for tool in (["zstd", "-dc"], ["xz", "-dc"], ["gzip", "-dc"]):
+    p = subprocess.run(tool, input=rest, capture_output=True)
+    if p.returncode == 0:
+        names = subprocess.run(["cpio", "-it", "--quiet"], input=p.stdout,
+                               capture_output=True).stdout.decode().split()
+        modules += sum(n.endswith((".ko", ".ko.xz", ".ko.zst")) for n in names)
+        print(modules, "fsck" if "usr/sbin/fsck.ext4" in names else "nofsck")
+        break
+else:
+    print(modules, "undecompressable")
+PYEOF
+)
+info "  initramfs $TARGET_KERNEL: ${INITRD_REPORT}"
+check "initramfs has fsck.ext4"             "[ '${INITRD_REPORT#* }' = fsck ]"
+check "initramfs has >= 300 modules"        "[ '${INITRD_REPORT%% *}' -ge 300 ]"
 check "exactly one overlay line"             "[ \$(grep -c '^uboot_overlay_addr0=.*BONEIO-BLACK-PINS' '$UENV') -eq 1 ]"
 check "no dtbs dir for host kernel"          "[ ! -e '$MNT/boot/dtbs/$(uname -r)' ]"
 check "boneio-migrate-v2 installed"          "[ -x '$MNT/usr/sbin/boneio-migrate-v2' ]"
@@ -464,6 +531,8 @@ phase "6/6 Shrink"
 LOOP=$(losetup -fP --show "$OUT_IMG"); sleep 1
 ROOT_PART="${LOOP}p${ROOT_NUM}"
 e2fsck -f -y "$ROOT_PART" || [ $? -le 1 ] || die "e2fsck failed"
+dumpe2fs -h "$ROOT_PART" 2>/dev/null | grep -q '^Filesystem features:.*dir_index' \
+    || die "dir_index was not restored on $ROOT_PART"
 resize2fs -M "$ROOT_PART"
 BLOCKS=$(dumpe2fs -h "$ROOT_PART" 2>/dev/null | awk -F: '/^Block count/{gsub(/ /,"",$2);print $2}')
 BSIZE=$(dumpe2fs -h "$ROOT_PART" 2>/dev/null | awk -F: '/^Block size/{gsub(/ /,"",$2);print $2}')

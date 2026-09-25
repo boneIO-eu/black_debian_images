@@ -50,7 +50,7 @@ log_skip() { echo -e "${BLUE}[SKIP]${NC} $1"; }
 
 BONEIO_USER="${BONEIO_USER:-boneio}"
 BONEIO_HOME="/home/${BONEIO_USER}"
-SCRIPT_VERSION="2026-09-24.3"
+SCRIPT_VERSION="2026-09-24.4"
 
 # Which boneIO goes into the image.
 #
@@ -231,6 +231,15 @@ else
     # just fewer attempts per connection and less time to make them.
     SSHD_DROPIN="/etc/ssh/sshd_config.d/10-boneio-hardening.conf"
     mkdir -p /etc/ssh/sshd_config.d
+    # Keep what was there: a failed validation below puts it back rather than
+    # deleting it. Deleting took a working hardening off an image whose sshd -t
+    # failed for a reason that had nothing to do with this file (no host keys
+    # on a sealed image, in the offline build).
+    SSHD_DROPIN_PREV=""
+    if [ -f "${SSHD_DROPIN}" ]; then
+        SSHD_DROPIN_PREV="$(mktemp)"
+        cp -p "${SSHD_DROPIN}" "${SSHD_DROPIN_PREV}"
+    fi
     cat > "${SSHD_DROPIN}" <<'SSHD_EOF'
 # boneIO login hardening. Managed by setup_boneio.sh — edit at your own risk.
 # Three guesses per connection instead of six, and a shorter window to make
@@ -249,10 +258,16 @@ SSHD_EOF
         step_mark "step1b_sshd"
         log_info "   SSH hardened (MaxAuthTries 3, LoginGraceTime 20, no root login)"
     else
-        rm -f "${SSHD_DROPIN}"
-        log_warn "   sshd rejected the hardening drop-in; reverted and left SSH untouched"
+        if [ -n "${SSHD_DROPIN_PREV}" ]; then
+            cp -p "${SSHD_DROPIN_PREV}" "${SSHD_DROPIN}"
+            log_warn "   sshd -t failed; restored the previous hardening drop-in"
+        else
+            rm -f "${SSHD_DROPIN}"
+            log_warn "   sshd rejected the hardening drop-in; reverted and left SSH untouched"
+        fi
         sshd -t 2>&1 | sed 's/^/     /' || true
     fi
+    [ -n "${SSHD_DROPIN_PREV}" ] && rm -f "${SSHD_DROPIN_PREV}"
 fi
 
 # =============================================================================

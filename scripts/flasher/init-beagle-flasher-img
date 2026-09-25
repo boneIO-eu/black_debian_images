@@ -496,12 +496,16 @@ fix_emmc_rootfs () {
 	echo "#" >> /tmp/rootfs/etc/fstab
 	echo "${DESTINATION}p${media_rootfs}  /  ext4  noatime,errors=remount-ro  0  1" >> /tmp/rootfs/etc/fstab
 
+	# nofail on the FAT partition: nothing the boot needs lives there (U-Boot
+	# reads uEnv.txt and the kernel from the ext4 root), and FAT has no journal.
+	# Without it, a partition torn by a power cut sends systemd to emergency
+	# mode with a healthy root. Migration 1.6.24 does the same on installed units.
 	if [ "x${media_rootfs}" = "x2" ] ; then
-		echo "${DESTINATION}p1  /boot/firmware vfat user,uid=1000,gid=1000,defaults 0 2" >> /tmp/rootfs/etc/fstab
+		echo "${DESTINATION}p1  /boot/firmware vfat user,uid=1000,gid=1000,defaults,nofail 0 2" >> /tmp/rootfs/etc/fstab
 	fi
 
 	if [ "x${media_rootfs}" = "x3" ] ; then
-		echo "${DESTINATION}p1  /boot/firmware vfat user,uid=1000,gid=1000,defaults 0 2" >> /tmp/rootfs/etc/fstab
+		echo "${DESTINATION}p1  /boot/firmware vfat user,uid=1000,gid=1000,defaults,nofail 0 2" >> /tmp/rootfs/etc/fstab
 		echo "${DESTINATION}p2       none    swap    sw      0       0" >> /tmp/rootfs/etc/fstab
 	fi
 

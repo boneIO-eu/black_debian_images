@@ -184,6 +184,20 @@ chmod 0440 "$MNT/etc/sudoers.d/zz-offline-build"
 BUILD_CACHE="${BUILD_CACHE:-$REPO_DIR/.build-cache}"
 mkdir -p "$BUILD_CACHE/apt" "$BUILD_CACHE/pip"
 
+# The image lists the BeagleBoard archive twice, under debian.beagleboard.org
+# (redirected to debian.beagle.cc, behind Cloudflare) and rcn-ee.com — one
+# archive, one signing key. The Cloudflare copy has served a stale Packages.gz
+# for a quarter of an hour at a time, and apt then fails the whole update
+# ("File has unexpected size … Mirror sync in progress?"). For the build only,
+# the container sees beagle.list with the rcn-ee.com line alone, bound read-only
+# over the real file; the image keeps both lines.
+BEAGLE_LIST_BIND=()
+if grep -q '^deb .*rcn-ee\.com/repos/' "$MNT/etc/apt/sources.list.d/beagle.list" 2>/dev/null; then
+    grep -v '^deb .*debian\.beagle\(board\.org\|\.cc\)/' "$MNT/etc/apt/sources.list.d/beagle.list" \
+        > "$BUILD_CACHE/beagle.list"
+    BEAGLE_LIST_BIND=(--bind-ro="$BUILD_CACHE/beagle.list:/etc/apt/sources.list.d/beagle.list")
+fi
+
 # SYSTEMD_OFFLINE=1: systemctl enable/disable edit symlinks offline, and
 # start/stop/restart/reload are ignored instead of failing under set -e.
 #
@@ -198,7 +212,7 @@ mkdir -p "$BUILD_CACHE/apt" "$BUILD_CACHE/pip"
 # the log, instead of hanging the build (the first run sat on passwd).
 nsp() {
     systemd-nspawn -q -D "$MNT" --as-pid2 --console=pipe \
-        --bind="$BUILD_CACHE/pip:/root/.cache/pip" \
+        --bind="$BUILD_CACHE/pip:/root/.cache/pip" "${BEAGLE_LIST_BIND[@]}" \
         --resolv-conf=replace-host --timezone=off \
         --setenv=SYSTEMD_OFFLINE=1 \
         --setenv=DEBIAN_FRONTEND=noninteractive \

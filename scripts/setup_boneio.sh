@@ -912,25 +912,39 @@ else
     install -o root -g root -m 0644 "$COMPOSE_ASSET" "$COMPOSE_LIVE"
 fi
 
-# Pull Docker images so Node-RED + Caddy work out of the box
-log_info "   Starting Docker daemon..."
-# Clean stale bridge state (prevents 'networks have same bridge name' error)
-systemctl stop docker 2>/dev/null || true
-ip link delete docker0 2>/dev/null || true
-rm -rf /var/lib/docker/network 2>/dev/null || true
-systemctl start docker 2>/dev/null || true
-log_info "   Pulling Docker images (Node-RED + Caddy)..."
-export HOSTNAME=$(hostname)
-cd ${BONEIO_HOME}/docker/nodered
-# Remove stale containers/networks from previous image runs
-docker compose down --remove-orphans 2>&1 || true
-docker network prune -f 2>/dev/null || true
-docker compose pull 2>&1 || log_warn "   Docker image pull failed (will retry on first boot)"
-docker compose up -d 2>&1 || log_warn "   Docker compose up failed"
-log_info "   Docker containers started"
-# Images no container uses any more — the Caddy an image had before a release
-# moved the pin, for one. Tens of MB each on a small eMMC.
-docker image prune -af 2>&1 | tail -1 || true
+# Pull Docker images so Node-RED + Caddy work out of the box.
+#
+# Not when the image is built on a PC (build_rootfs_offline.sh sets
+# BONEIO_OFFLINE_BUILD=1): there is no dockerd there, so this block could only
+# delete the network database and fail to recreate the containers — and the
+# containers inherited from the previous image would then point at networks
+# that no longer exist, which is how a dev15 card's Node-RED failed to start.
+# Skipped, the store stays exactly as the previous image left it, containers
+# and networks consistent; an image a release newly pins is pulled at first
+# boot by the offline build's own unit.
+if [ "${BONEIO_OFFLINE_BUILD:-}" = 1 ]; then
+    log_info "   Offline build: Docker store kept as inherited (no dockerd here)"
+else
+    # Pull Docker images so Node-RED + Caddy work out of the box
+    log_info "   Starting Docker daemon..."
+    # Clean stale bridge state (prevents 'networks have same bridge name' error)
+    systemctl stop docker 2>/dev/null || true
+    ip link delete docker0 2>/dev/null || true
+    rm -rf /var/lib/docker/network 2>/dev/null || true
+    systemctl start docker 2>/dev/null || true
+    log_info "   Pulling Docker images (Node-RED + Caddy)..."
+    export HOSTNAME=$(hostname)
+    cd ${BONEIO_HOME}/docker/nodered
+    # Remove stale containers/networks from previous image runs
+    docker compose down --remove-orphans 2>&1 || true
+    docker network prune -f 2>/dev/null || true
+    docker compose pull 2>&1 || log_warn "   Docker image pull failed (will retry on first boot)"
+    docker compose up -d 2>&1 || log_warn "   Docker compose up failed"
+    log_info "   Docker containers started"
+    # Images no container uses any more — the Caddy an image had before a release
+    # moved the pin, for one. Tens of MB each on a small eMMC.
+    docker image prune -af 2>&1 | tail -1 || true
+fi
 # NOTE: Don't 'docker compose stop' before poweroff — restart:unless-stopped
 # needs containers to have been running to auto-start on next boot.
 

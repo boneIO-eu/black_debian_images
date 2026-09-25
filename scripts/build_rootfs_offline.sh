@@ -542,15 +542,23 @@ fi
 rm -f "$MNT/etc/systemd/system/multi-user.target.wants/boneio-containers-firstboot.service" \
       "$MNT/etc/systemd/system/boneio-containers-firstboot.service" \
       "$MNT/var/lib/boneio/containers-pending"
-if [ ${#MISSING_IMAGES[@]} -gt 0 ] || [ -n "$DOCKER_STORE" ]; then
+# Images built before setup learned to leave the store alone (up to the first
+# dev15 PC builds) lost /var/lib/docker/network without their containers being
+# recreated: every container still names a network that no longer exists.
+NETWORK_DB_MISSING=""
+[ -e "$MNT/var/lib/docker/network/files/local-kv.db" ] || NETWORK_DB_MISSING=1
+if [ ${#MISSING_IMAGES[@]} -gt 0 ] || [ -n "$DOCKER_STORE" ] || [ -n "$NETWORK_DB_MISSING" ]; then
     [ ${#MISSING_IMAGES[@]} -gt 0 ] && warn "Not in the Docker store: ${MISSING_IMAGES[*]}"
+    [ -n "$NETWORK_DB_MISSING" ] && warn "Docker's network database is missing; containers get recreated"
     warn "Installing boneio-containers-firstboot.service: containers come up at first boot"
     cat > "$MNT/etc/systemd/system/boneio-containers-firstboot.service" <<'UNIT'
 # Installed by black_debian_images/scripts/build_rootfs_offline.sh.
 #
 # This image was built on a PC, where no container can be pulled or created.
 # At the first boot with a network, bring the compose project up — pulling what
-# the image lacks, recreating what changed — then never again.
+# the image lacks and recreating every container, so none is left pointing at
+# a network or an image the store no longer has — then never again.
+# Recreating takes seconds; only a pull takes long.
 #
 # Type=simple with its own retry loop, not a oneshot: a oneshot in
 # multi-user.target holds the whole boot until it succeeds, and a dev15 card
@@ -566,7 +574,7 @@ ConditionPathExists=/var/lib/boneio/containers-pending
 Type=simple
 WorkingDirectory=/home/boneio/docker/nodered
 ExecStart=/bin/sh -c 'export HOSTNAME="$$(hostname)"; \
-    until /usr/bin/docker compose -f docker-compose.yaml up -d --remove-orphans; do \
+    until /usr/bin/docker compose -f docker-compose.yaml up -d --force-recreate --remove-orphans; do \
         echo "compose up failed; retrying in 2 min"; sleep 120; done; \
     /usr/bin/docker image prune -af || true; \
     rm -f /var/lib/boneio/containers-pending'
@@ -576,11 +584,15 @@ CPUWeight=20
 WantedBy=multi-user.target
 UNIT
     mkdir -p "$MNT/var/lib/boneio"
-    printf '%s\n' "${MISSING_IMAGES[@]:-store:$DOCKER_STORE}" > "$MNT/var/lib/boneio/containers-pending"
+    printf '%s\n' "${MISSING_IMAGES[@]:-recreate${DOCKER_STORE:+ from $DOCKER_STORE}}" > "$MNT/var/lib/boneio/containers-pending"
     ln -sf /etc/systemd/system/boneio-containers-firstboot.service \
         "$MNT/etc/systemd/system/multi-user.target.wants/boneio-containers-firstboot.service"
 else
     info "  ✅ every image the compose file names is in the inherited Docker store"
+fi
+
+if [ -n "$NETWORK_DB_MISSING" ] && [ ! -e "$MNT/var/lib/boneio/containers-pending" ]; then
+    die "Docker's network database is missing and no first-boot unit is armed to recreate the containers"
 fi
 
 # Put the image's own resolv.conf back before the build dir disappears.

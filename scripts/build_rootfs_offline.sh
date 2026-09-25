@@ -214,11 +214,18 @@ fi
 # SYSTEMD_OFFLINE=1: systemctl enable/disable edit symlinks offline, and
 # start/stop/restart/reload are ignored instead of failing under set -e.
 #
+# --restrict-address-families= (empty) keeps today's behaviour explicitly:
+# systemd 262 announces that a later version will allow only AF_INET, AF_INET6
+# and AF_UNIX by default. --tmpfs=/run/sshd: ssh.service creates it on a real
+# boot, and without it `sshd -t` in setup's step 1b fails ("Missing privilege
+# separation directory") and never validates the hardening drop-in.
+#
 # stdin is /dev/null and the console a pipe: nothing in here may wait for a
 # person. A prompt gets end-of-file and fails at once, with its question in
 # the log, instead of hanging the build (the first run sat on passwd).
 nsp() {
     systemd-nspawn -q -D "$MNT" --as-pid2 --console=pipe \
+        --restrict-address-families= --tmpfs=/run/sshd \
         --bind="$BUILD_CACHE/pip:/root/.cache/pip" "${BEAGLE_LIST_BIND[@]}" \
         --resolv-conf=replace-host --timezone=off \
         --setenv=SYSTEMD_OFFLINE=1 \

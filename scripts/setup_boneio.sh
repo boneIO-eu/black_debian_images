@@ -50,7 +50,7 @@ log_skip() { echo -e "${BLUE}[SKIP]${NC} $1"; }
 
 BONEIO_USER="${BONEIO_USER:-boneio}"
 BONEIO_HOME="/home/${BONEIO_USER}"
-SCRIPT_VERSION="2026-09-24.2"
+SCRIPT_VERSION="2026-09-24.3"
 
 # Which boneIO goes into the image.
 #
@@ -873,6 +873,9 @@ docker network prune -f 2>/dev/null || true
 docker compose pull 2>&1 || log_warn "   Docker image pull failed (will retry on first boot)"
 docker compose up -d 2>&1 || log_warn "   Docker compose up failed"
 log_info "   Docker containers started"
+# Images no container uses any more — the Caddy an image had before a release
+# moved the pin, for one. Tens of MB each on a small eMMC.
+docker image prune -af 2>&1 | tail -1 || true
 # NOTE: Don't 'docker compose stop' before poweroff — restart:unless-stopped
 # needs containers to have been running to auto-start on next boot.
 
@@ -1069,8 +1072,27 @@ update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 # boneio-migrate (applied in STEP 9 above). No heredoc needed here.
 
 # Clean up
-apt-get autoremove -y
+apt-get autoremove -y --purge
+# Packages removed without --purge (here or in an earlier image) leave their
+# configuration behind in state "rc". Nothing uses it; it only makes dpkg -l
+# and the image lie about what is installed.
+dpkg -l | awk '/^rc/ {print $2}' | xargs -r apt-get -y purge
 apt-get clean
+# Leftovers of kernels that are gone. /boot/dtbs/<k>/ outlives its package
+# because the boneIO overlays copied into it belong to no package, and
+# /usr/lib/modules/<k>/ keeps depmod's files. Only for kernels whose image is
+# no longer in /boot — never the one that boots.
+for leftover in /boot/dtbs/* /usr/lib/modules/*; do
+    [ -d "$leftover" ] || continue
+    k="$(basename "$leftover")"
+    if [ ! -e "/boot/vmlinuz-$k" ] && [ "$k" != "$(uname -r)" ]; then
+        rm -rf "$leftover"
+        log_info "   Removed leftover $leftover (kernel $k is not installed)"
+    fi
+done
+# Package lists: tens of MB the controller downloads again before its first
+# update anyway (the panel's check starts with apt-get update).
+rm -rf /var/lib/apt/lists/*
 journalctl --vacuum-time=0d
 truncate -s 0 /etc/machine-id
 

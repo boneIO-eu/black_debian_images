@@ -2,7 +2,14 @@
 ## BoneIO Black — build a new rootfs.img on the PC, without the BeagleBone.
 ##
 ## Usage:
-##   sudo BONEIO_VERSION=<x> ./scripts/build_rootfs_offline.sh <previous_rootfs.img> <new_rootfs.img> [--grow 3G] [--no-shrink]
+##   sudo BONEIO_VERSION=<x> ./scripts/build_rootfs_offline.sh <previous_rootfs.img> <new_rootfs.img> [--grow 3G] [--no-shrink] [--docker-store <tar[.zst]>]
+##
+## --docker-store: replace the image's /var/lib/docker with a controller's —
+## once, after a release moves a pinned container image, so flashed units do
+## not each pull it at first boot. Made on a controller that has the new image:
+##   sudo systemctl stop docker docker.socket
+##   sudo tar -C /var/lib/docker --numeric-owner -cpf - . | zstd -T0 > docker-store.tar.zst
+##   sudo systemctl start docker
 ##
 ## Example:
 ##   sudo BONEIO_VERSION=1.6.0.dev14 ./scripts/build_rootfs_offline.sh \
@@ -44,6 +51,7 @@ BASE_IMG=""
 OUT_IMG=""
 GROW="3G"
 SHRINK=true
+DOCKER_STORE=""
 BONEIO_VERSION="${BONEIO_VERSION:-}"
 BOARD_CONFIG_VERSION="${BOARD_CONFIG_VERSION:-1.1}"
 
@@ -51,6 +59,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --grow)      GROW="$2"; shift 2 ;;
         --no-shrink) SHRINK=false; shift ;;
+        --docker-store) DOCKER_STORE="$2"; shift 2 ;;
         -h|--help)   grep '^##' "$0" | sed 's/^## \?//'; exit 0 ;;
         *)
             if   [ -z "$BASE_IMG" ]; then BASE_IMG="$1"
@@ -73,6 +82,7 @@ phase() { echo -e "\n${CYAN}══ $* ══${NC}"; }
 [ -n "$BASE_IMG" ] && [ -n "$OUT_IMG" ] || die "Usage: $0 <previous_rootfs.img> <new_rootfs.img>"
 [ -f "$BASE_IMG" ] || die "$BASE_IMG does not exist"
 [ -e "$OUT_IMG" ] && die "$OUT_IMG already exists — refusing to overwrite"
+[ -z "$DOCKER_STORE" ] || [ -f "$DOCKER_STORE" ] || die "$DOCKER_STORE does not exist"
 
 for tool in systemd-nspawn losetup sfdisk e2fsck resize2fs dumpe2fs blkid rsync; do
     command -v "$tool" >/dev/null || die "missing tool: $tool"
@@ -168,6 +178,16 @@ fi
 BUILD="$MNT/root/boneio-build"
 mkdir -p "$BUILD/bin"
 rsync -a --exclude '*.pkl' "$REPO_DIR/scripts" "$REPO_DIR/configs" "$BUILD/"
+
+if [ -n "$DOCKER_STORE" ]; then
+    info "Replacing the image's Docker store with $DOCKER_STORE"
+    rm -rf "$MNT/var/lib/docker"
+    mkdir -p "$MNT/var/lib/docker"
+    case "$DOCKER_STORE" in
+        *.zst) zstd -dc "$DOCKER_STORE" | tar -C "$MNT/var/lib/docker" --numeric-owner -xpf - ;;
+        *)     tar -C "$MNT/var/lib/docker" --numeric-owner -xpf "$DOCKER_STORE" ;;
+    esac
+fi
 
 # Keep the image's own resolv.conf; nspawn copies the host's in for the build.
 RESOLV_BAK="$BUILD/resolv.conf.orig"
@@ -391,7 +411,9 @@ printf '#!/bin/sh\necho "[offline build] halt stubbed"\nexit 0\n' > "$BUILD/bin/
 chmod +x "$BUILD/bin/uname" "$BUILD/bin/halt"
 
 SETUP_ENV=(--setenv=PATH=/root/boneio-build/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-           --setenv=BOARD_CONFIG_VERSION="$BOARD_CONFIG_VERSION")
+           --setenv=BOARD_CONFIG_VERSION="$BOARD_CONFIG_VERSION"
+           # No dockerd here: setup keeps the inherited Docker store as it is.
+           --setenv=BONEIO_OFFLINE_BUILD=1)
 [ -n "$BONEIO_VERSION" ] && SETUP_ENV+=(--setenv=BONEIO_VERSION="$BONEIO_VERSION")
 
 # iptables-nft opens a netlink socket even for `iptables -V`, and qemu-user
@@ -486,6 +508,7 @@ check "machine-id empty"                     "[ ! -s '$MNT/etc/machine-id' ]"
 check "SSH hardening drop-in present"       "[ -s '$MNT/etc/ssh/sshd_config.d/10-boneio-hardening.conf' ]"
 check "no SSH host keys"                     "! ls '$MNT'/etc/ssh/ssh_host_* >/dev/null 2>&1"
 check "iptables back on nft"                  "[ \"\$(readlink '$MNT/etc/alternatives/iptables')\" = '${IPT_ALT_IP4:-/usr/sbin/iptables-nft}' ]"
+check "MQTT passwords armed for first boot"  "[ ! -e '$MNT/var/lib/boneio/mqtt-firstboot.done' ] && [ -L '$MNT/etc/systemd/system/multi-user.target.wants/boneio-mqtt-firstboot.service' ]"
 check "docker store inherited"               "[ -s '$MNT/var/lib/docker/image/overlay2/repositories.json' ]"
 if [ -n "$BONEIO_VERSION" ]; then
     GOT=$(nsp --chdir=/tmp /home/boneio/boneio/venv/bin/python3 -c 'import importlib.metadata as m; print(m.version("boneio"))' 2>/dev/null | tr -d '\r')
@@ -496,13 +519,14 @@ fi
 #
 # Nothing here can pull an image: there is no dockerd in the container, and a
 # host dockerd writing the image's /var/lib/docker would be a newer Docker than
-# the device's. Images and containers are inherited from the previous rootfs,
-# which covers everything whose reference did not change. A reference that did
-# change — a release that bumps the pinned Caddy — is left to the device: a
-# one-shot unit pulls it and recreates the containers at the first boot with a
-# network, retrying until that works. (docker load of a saved tarball would not
-# help: an image referenced by digest only counts as present when it was
-# pulled, so compose would pull it again anyway.)
+# the device's. Setup leaves the inherited store alone (BONEIO_OFFLINE_BUILD),
+# so containers and networks stay as consistent as the previous image had
+# them, and everything whose reference did not change is simply there. A
+# reference that did change — a release that bumps the pinned Caddy — is left
+# to the device, and so is a store taken from another controller: a unit
+# brings the containers up at the first boot with a network, retrying until
+# that works. (docker load of a saved tarball would not help: an image pinned
+# by digest only counts as present when it was pulled.)
 COMPOSE_LIVE="$MNT/home/boneio/docker/nodered/docker-compose.yaml"
 REPOS_JSON="$MNT/var/lib/docker/image/overlay2/repositories.json"
 MISSING_IMAGES=()
@@ -515,38 +539,44 @@ if [ -f "$COMPOSE_LIVE" ]; then
         grep -qF "\"${key}\"" "$REPOS_JSON" 2>/dev/null || MISSING_IMAGES+=("$ref")
     done < <(sed -n 's/^[[:space:]]*image:[[:space:]]*\([^[:space:]]*\).*/\1/p' "$COMPOSE_LIVE")
 fi
-if [ ${#MISSING_IMAGES[@]} -gt 0 ]; then
-    warn "Not in the inherited Docker store: ${MISSING_IMAGES[*]}"
-    warn "Installing boneio-containers-firstboot.service to pull them on first boot"
+rm -f "$MNT/etc/systemd/system/multi-user.target.wants/boneio-containers-firstboot.service" \
+      "$MNT/etc/systemd/system/boneio-containers-firstboot.service" \
+      "$MNT/var/lib/boneio/containers-pending"
+if [ ${#MISSING_IMAGES[@]} -gt 0 ] || [ -n "$DOCKER_STORE" ]; then
+    [ ${#MISSING_IMAGES[@]} -gt 0 ] && warn "Not in the Docker store: ${MISSING_IMAGES[*]}"
+    warn "Installing boneio-containers-firstboot.service: containers come up at first boot"
     cat > "$MNT/etc/systemd/system/boneio-containers-firstboot.service" <<'UNIT'
 # Installed by black_debian_images/scripts/build_rootfs_offline.sh.
 #
-# This image was built on a PC, where no container image can be pulled. The
-# compose file names images the build could not bring along; pull them and
-# recreate the containers at the first boot that has a network, then never
-# again.
+# This image was built on a PC, where no container can be pulled or created.
+# At the first boot with a network, bring the compose project up — pulling what
+# the image lacks, recreating what changed — then never again.
+#
+# Type=simple with its own retry loop, not a oneshot: a oneshot in
+# multi-user.target holds the whole boot until it succeeds, and a dev15 card
+# waited ten minutes for SSH and logs behind one that kept failing.
 [Unit]
-Description=boneIO: pull the container images an offline-built image lacks
+Description=boneIO: bring the containers up (first boot of a PC-built image)
 Requires=docker.service
 After=docker.service network-online.target
 Wants=network-online.target
 ConditionPathExists=/var/lib/boneio/containers-pending
 
 [Service]
-Type=oneshot
+Type=simple
 WorkingDirectory=/home/boneio/docker/nodered
-ExecStart=/usr/bin/docker compose -f /home/boneio/docker/nodered/docker-compose.yaml up -d
-ExecStartPost=-/usr/bin/docker image prune -af
-ExecStartPost=/bin/rm -f /var/lib/boneio/containers-pending
-Restart=on-failure
-RestartSec=2min
+ExecStart=/bin/sh -c 'export HOSTNAME="$$(hostname)"; \
+    until /usr/bin/docker compose -f docker-compose.yaml up -d --remove-orphans; do \
+        echo "compose up failed; retrying in 2 min"; sleep 120; done; \
+    /usr/bin/docker image prune -af || true; \
+    rm -f /var/lib/boneio/containers-pending'
 CPUWeight=20
 
 [Install]
 WantedBy=multi-user.target
 UNIT
     mkdir -p "$MNT/var/lib/boneio"
-    printf '%s\n' "${MISSING_IMAGES[@]}" > "$MNT/var/lib/boneio/containers-pending"
+    printf '%s\n' "${MISSING_IMAGES[@]:-store:$DOCKER_STORE}" > "$MNT/var/lib/boneio/containers-pending"
     ln -sf /etc/systemd/system/boneio-containers-firstboot.service \
         "$MNT/etc/systemd/system/multi-user.target.wants/boneio-containers-firstboot.service"
 else

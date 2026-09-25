@@ -1,0 +1,15 @@
+# Installed by setup_boneio.sh. See /usr/local/sbin/boneio-mqtt-firstboot.
+[Unit]
+Description=boneIO: draw this device's own MQTT passwords (first boot)
+DefaultDependencies=no
+After=local-fs.target
+Before=mosquitto.service boneio.service
+ConditionPathExists=!/var/lib/boneio/mqtt-firstboot.done
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/boneio-mqtt-firstboot
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

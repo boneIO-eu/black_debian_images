@@ -1,0 +1,56 @@
+#!/bin/sh
+# Installed by setup_boneio.sh. Runs once, at a flashed controller's first
+# boot, before the broker and boneIO start.
+#
+# One MQTT password per device, not one per image. The build used to draw the
+# broker's passwords while the image was made, so every unit flashed from it
+# shared them — and generate_all_images then shipped mqtt.yaml with the
+# factory "boneio123", so boneIO could not even reach its own broker. Here each
+# unit draws its own for boneio, homeassistant and mqtt, and the one boneIO
+# signs in with goes into secrets.yaml (mqtt.yaml says `!secret
+# mqtt_password`), which boneIO reads without invalidating its config cache.
+#
+# The owner sets homeassistant and mqtt to their own in the panel
+# (Settings -> MQTT passwords); nothing here needs to be known to anyone.
+set -eu
+
+FLAG=/var/lib/boneio/mqtt-firstboot.done
+PASSWD=/etc/mosquitto/passwd
+BONEIO_HOME=/home/boneio
+
+[ -e "$FLAG" ] && exit 0
+
+gen() { openssl rand -base64 24 | tr -d '/+=\n' | cut -c1-24; }
+
+BONEIO_PW="$(gen)"
+touch "$PASSWD"
+for account in boneio homeassistant mqtt; do
+    if [ "$account" = boneio ]; then pw="$BONEIO_PW"; else pw="$(gen)"; fi
+    mosquitto_passwd -b "$PASSWD" "$account" "$pw"
+done
+# mosquitto_passwd picks its own mode; the broker reads the file through its
+# group, and nobody else may (F-11).
+chown root:mosquitto "$PASSWD"
+chmod 0640 "$PASSWD"
+
+install -d -m 0700 /etc/boneio
+printf '%s\n' "$BONEIO_PW" > /etc/boneio/mqtt-boneio.pass
+chmod 0600 /etc/boneio/mqtt-boneio.pass
+
+# The live config and the per-board copies a board switch installs from.
+for dir in "$BONEIO_HOME/boneio" "$BONEIO_HOME"/.cache/boneio_configs/*; do
+    secrets="$dir/secrets.yaml"
+    [ -d "$dir" ] || continue
+    if [ -f "$secrets" ] && grep -q '^mqtt_password:' "$secrets"; then
+        sed -i "s|^mqtt_password:.*|mqtt_password: \"$BONEIO_PW\"|" "$secrets"
+    elif [ -f "$dir/mqtt.yaml" ] && grep -q '!secret mqtt_password' "$dir/mqtt.yaml"; then
+        printf 'mqtt_password: "%s"\n' "$BONEIO_PW" >> "$secrets"
+    else
+        continue
+    fi
+    chown boneio:boneio "$secrets"
+    chmod 0600 "$secrets"
+done
+
+install -d /var/lib/boneio
+date -u +%FT%TZ > "$FLAG"

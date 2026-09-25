@@ -50,7 +50,7 @@ log_skip() { echo -e "${BLUE}[SKIP]${NC} $1"; }
 
 BONEIO_USER="${BONEIO_USER:-boneio}"
 BONEIO_HOME="/home/${BONEIO_USER}"
-SCRIPT_VERSION="2026-09-24.4"
+SCRIPT_VERSION="2026-09-25.1"
 
 # Which boneIO goes into the image.
 #
@@ -565,6 +565,34 @@ else
     log_warn "   the panel (Settings -> MQTT passwords) before pointing HA at them."
 fi
 
+# =============================================================================
+# STEP 6b: MQTT passwords drawn per device, at first boot
+# =============================================================================
+# The passwords step 6 creates are this build's, and every unit flashed from the
+# image would share them. boneio-mqtt-firstboot draws each device's own before
+# the broker and boneIO start, and puts boneIO's into secrets.yaml, which
+# mqtt.yaml reads with `!secret mqtt_password`.
+#
+# Installed disarmed: the flag says "already done", so running this script on a
+# controller in service never rotates its passwords from under Home Assistant.
+# Sealing the image (step 11) removes the flag, so only a freshly flashed unit
+# runs it.
+log_info "6b/12: Installing per-device MQTT passwords for first boot..."
+FIRSTBOOT_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")/firstboot"
+for fb in boneio-mqtt-firstboot boneio-mqtt-firstboot.service; do
+    if [ ! -f "$FIRSTBOOT_SRC/$fb" ]; then
+        mkdir -p /tmp/boneio-firstboot
+        curl -fsSL "https://raw.githubusercontent.com/boneIO-eu/black_debian_images/main/scripts/firstboot/$fb" \
+            -o "/tmp/boneio-firstboot/$fb"
+        FIRSTBOOT_SRC=/tmp/boneio-firstboot
+    fi
+done
+install -o root -g root -m 0755 "$FIRSTBOOT_SRC/boneio-mqtt-firstboot" /usr/local/sbin/boneio-mqtt-firstboot
+install -o root -g root -m 0644 "$FIRSTBOOT_SRC/boneio-mqtt-firstboot.service" /etc/systemd/system/boneio-mqtt-firstboot.service
+systemctl enable boneio-mqtt-firstboot.service 2>/dev/null || true
+install -d /var/lib/boneio
+[ -e /var/lib/boneio/mqtt-firstboot.done ] || echo "disarmed by setup_boneio.sh" > /var/lib/boneio/mqtt-firstboot.done
+
 # Steps 7-8 (journald, sudoers, OLED, systemd services) are applied below
 # by boneio-migrate after pip install. No heredocs needed here.
 
@@ -615,6 +643,18 @@ if [ "${BONEIO_INSTALLED}" != "${BONEIO_VERSION}" ]; then
     exit 1
 fi
 log_info "   boneio ${BONEIO_INSTALLED} installed"
+
+# The shipped mqtt.yaml reads its password with !secret, and first boot changes
+# it in secrets.yaml. A boneIO that pickles !secret values into its config
+# cache would keep connecting with the factory value: MQTT "Not authorized"
+# from the first boot. SecretStr is what keeps secrets out of that cache.
+if ! ( cd /tmp && ${BONEIO_HOME}/boneio/venv/bin/python3 -c \
+        'from boneio.core.config.yaml_util import SecretStr' ) 2>/dev/null; then
+    log_error "   boneio ${BONEIO_INSTALLED} keeps !secret values in its config cache."
+    log_error "   These configs take the MQTT password from secrets.yaml; build on"
+    log_error "   boneIO 1.6.0.dev16 or later."
+    exit 1
+fi
 
 # Ensure PyYAML has C extension (CLoader). pip install --upgrade may
 # overwrite our bundled armv7l wheel with a PyPI sdist lacking libyaml.
@@ -802,7 +842,7 @@ else
     # Fallback when running piped via curl: download configs from GitHub
     for variant in 32x10 24x16 cover cover_mix tester; do
         mkdir -p "$CONFIGS_DIR/$variant"
-        for f in config.yaml event.yaml binary_sensor.yaml mqtt.yaml adc.yaml output32x10A.yaml output24x16A.yaml outputCover.yaml outputCoverMix.yaml cover.yaml; do
+        for f in config.yaml event.yaml binary_sensor.yaml mqtt.yaml secrets.yaml adc.yaml output32x10A.yaml output24x16A.yaml outputCover.yaml outputCoverMix.yaml cover.yaml; do
             curl -fsSL "https://raw.githubusercontent.com/boneIO-eu/black_debian_images/main/configs/$BOARD_CONFIG_VERSION/$variant/$f" -o "$CONFIGS_DIR/$variant/$f" 2>/dev/null || true
         done
     done
@@ -1137,6 +1177,9 @@ touch /etc/bbb.io/ssh_regenerate
 find /var/log -type f -exec truncate -s 0 {} \;
 rm -rf /tmp/*
 rm -rf /var/tmp/*
+# Arm the per-device MQTT passwords (step 6b) for the image's first boot.
+rm -f /var/lib/boneio/mqtt-firstboot.done
+
 # Clear mosquitto retained messages (boneio may have published during setup)
 systemctl stop mosquitto 2>/dev/null || true
 rm -f /var/lib/mosquitto/mosquitto.db /var/lib/mosquitto/*.db

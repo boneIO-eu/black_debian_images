@@ -96,8 +96,12 @@ cleanup() {
     # Background downloads hold files open in the image, and sudo hands
     # Ctrl+C to this script alone: kill them first, or the unmount fails and
     # the image stays mounted.
-    for job in $(jobs -p); do pkill -P "$job" 2>/dev/null; kill "$job" 2>/dev/null; done
-    wait 2>/dev/null
+    local jobs_left
+    jobs_left=$(jobs -p)
+    for job in $jobs_left; do pkill -P "$job" 2>/dev/null; kill "$job" 2>/dev/null; done
+    # Named PIDs only: a bare `wait` also waits for the `tee` behind the log,
+    # which never exits, and the cleanup would hang.
+    [ -n "$jobs_left" ] && wait $jobs_left 2>/dev/null
     rm -f  "$MNT/etc/sudoers.d/zz-offline-build" 2>/dev/null
     rm -rf "$MNT/root/boneio-build" 2>/dev/null
     umount "$MNT/boot/firmware" 2>/dev/null
@@ -214,14 +218,14 @@ PREFETCH_PARALLEL=2
 # slower than 50 kB/s for 15 s is abandoned for the next URI, and a file no
 # URI delivers is left to apt — the prefetch only ever saves time.
 fetch_one() {
-    local dest="$1" hash="$2"; shift 2
+    local dest="$1" hash="$2" sumtool="$3"; shift 3
     local uri
     for uri in "$@"; do
         local stats
         if stats=$(curl -fsSL --retry 1 --retry-delay 2 --connect-timeout 10 \
                 --speed-limit 50000 --speed-time 15 -w '%{remote_ip} %{speed_download}' \
                 -o "$dest.part" "$uri" 2>&1) \
-            && echo "$hash  $dest.part" | sha256sum -c --quiet >/dev/null 2>&1; then
+            && echo "$hash  $dest.part" | "$sumtool" -c --quiet >/dev/null 2>&1; then
             mv "$dest.part" "$dest"
             cp -f "$dest" "$BUILD_CACHE/apt/" 2>/dev/null || true
             return 0
@@ -236,32 +240,38 @@ fetch_one() {
 # Reads apt's --print-uris lines ('URI' file size SHA256:hash) on stdin and
 # downloads them into $1, a couple at a time, printing progress every 5 s.
 fetch_deb() {
-    local archives="$1" uri file size hash total=0 names=()
-    local rest
+    local archives="$1" uri file size rest hash sumtool total=0 names=() pids=()
     while read -r uri file size rest; do
-        # apt 3 lists every hash it knows after the size ("SHA256:… MD5Sum:…");
-        # taking the rest of the line as the SHA256 rejected every download.
-        [[ "$rest" =~ SHA256:([0-9a-f]{64}) ]] || continue
-        hash="${BASH_REMATCH[1]}"
+        # apt prints the hash it trusts most, and apt 3 may print several
+        # ("SHA256:… MD5Sum:…"); take the strongest one there is.
+        hash=""; sumtool=""
+        if   [[ "$rest" =~ SHA512:([0-9a-f]{128}) ]]; then hash="${BASH_REMATCH[1]}"; sumtool=sha512sum
+        elif [[ "$rest" =~ SHA256:([0-9a-f]{64})  ]]; then hash="${BASH_REMATCH[1]}"; sumtool=sha256sum
+        fi
+        if [ -z "$hash" ]; then
+            echo "  cannot read a hash for $file — apt will fetch it (apt said: ${rest:0:80})"
+            continue
+        fi
         uri="${uri#\'}"; uri="${uri%\'}"
-        if [ -f "$archives/$file" ] && echo "$hash  $archives/$file" | sha256sum -c --quiet >/dev/null 2>&1; then
+        if [ -f "$archives/$file" ] && echo "$hash  $archives/$file" | "$sumtool" -c --quiet >/dev/null 2>&1; then
             continue
         fi
         if [ -f "$BUILD_CACHE/apt/$file" ] \
-            && echo "$hash  $BUILD_CACHE/apt/$file" | sha256sum -c --quiet >/dev/null 2>&1; then
+            && echo "$hash  $BUILD_CACHE/apt/$file" | "$sumtool" -c --quiet >/dev/null 2>&1; then
             cp -f "$BUILD_CACHE/apt/$file" "$archives/$file"
             info "  from cache: $file"
             continue
         fi
         total=$((total + size)); names+=("$archives/$file")
         while [ "$(jobs -rp | wc -l)" -ge "$PREFETCH_PARALLEL" ]; do sleep 0.3; done
-        local uris=("$uri")
-        local from
+        local uris=("$uri") from
         for from in "${MIRROR_FROM[@]}"; do
             [[ "$uri" == "$from"* ]] && uris=("${MIRROR_TO}${uri#"$from"}" "$uri")
         done
-        fetch_one "$archives/$file" "$hash" "${uris[@]}" &
+        fetch_one "$archives/$file" "$hash" "$sumtool" "${uris[@]}" &
+        pids+=($!)
     done
+    [ ${#pids[@]} -eq 0 ] && return 0
     local started=$SECONDS done_bytes f
     while [ -n "$(jobs -rp)" ]; do
         sleep 5
@@ -274,7 +284,8 @@ fetch_deb() {
             $((total / 1048576)) $((SECONDS - started)) \
             $((done_bytes / 1024 / (SECONDS - started + 1)))
     done
-    wait
+    # Named PIDs only — see cleanup(): a bare wait never returns here.
+    wait "${pids[@]}" 2>/dev/null || true
 }
 
 prefetch_debs dist-upgrade

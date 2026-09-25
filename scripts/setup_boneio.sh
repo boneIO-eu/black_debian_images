@@ -74,7 +74,7 @@ SCRIPT_VERSION="2026-09-24.4"
 # is copied from this repo when a card is written, so changes there need no new
 # image — but anything in the boneIO application does, and that is what this
 # line decides.
-BONEIO_VERSION="${BONEIO_VERSION:-1.6.0.dev13}"
+BONEIO_VERSION="${BONEIO_VERSION:-1.6.0.dev15}"
 
 # --- Idempotent step markers ---
 MARKER_DIR="/var/lib/boneio/.setup.d"

@@ -23,3 +23,8 @@ CLAUDE.md
 # refreshes them from ../app_black before it builds; without that checkout an
 # image simply ships without a warm cache and the app builds one on first boot.
 configs/*/*/config.yaml.cache.pkl
+
+# Downloads kept between offline builds (scripts/build_rootfs_offline.sh).
+.build-cache/
+# Offline build logs, next to the image they describe.
+*.build.log

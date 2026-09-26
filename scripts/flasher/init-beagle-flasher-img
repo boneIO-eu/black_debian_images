@@ -1157,6 +1157,15 @@ reset_accounts () {
 	else
 		message="INFO: No users.json — the device was already waiting for the wizard" ; broadcast
 	fi
+	# The token key too. The panel checks only that a token's user exists, so
+	# with the old key a token issued before the reset would work again the
+	# moment the wizard recreates an account with the same name ("admin",
+	# usually). boneIO draws a new key when the file is missing.
+	if [ -f "$cfg/jwt_secret" ]; then
+		mv "$cfg/jwt_secret" "$cfg/jwt_secret.reset-${stamp}" \
+			|| recovery_abort "Cannot move" "jwt_secret"
+		message="INFO: Old sessions invalidated (jwt_secret.reset-${stamp})" ; broadcast
+	fi
 
 	if [ -n "${BONEIO_EMMC_PASSWORD:-}" ]; then
 		if chroot "$OLD_ROOT" /bin/sh -c "echo 'boneio:${BONEIO_EMMC_PASSWORD}' | chpasswd" 2>/dev/null; then
@@ -1265,7 +1274,29 @@ keep_config_restore () {
 	( set -o pipefail
 	  tar -C "$KEEP_DIR/config" -cf - . | tar -C "$home/boneio" -xpf - ) || failed="config"
 	if [ -f "$KEEP_DIR/boneiostate.json" ]; then
-		cp -a "$KEEP_DIR/boneiostate.json" "$home/" || failed="$failed state"
+		# Merged, not copied: the old state is the owner's, but the hardware
+		# flags were just probed on this board (relay inversion, above), and an
+		# install older than that probe has none.
+		python3 - "$KEEP_DIR/boneiostate.json" "$home/boneiostate.json" <<'PYMERGE' || failed="$failed state"
+import json, os, sys
+kept, target = sys.argv[1], sys.argv[2]
+with open(kept) as f:
+    state = json.load(f)
+fresh = {}
+if os.path.exists(target):
+    try:
+        with open(target) as f:
+            fresh = json.load(f)
+    except ValueError:
+        fresh = {}
+if isinstance(state, dict) and isinstance(fresh.get("hardware"), dict):
+    hw = state.setdefault("hardware", {})
+    if isinstance(hw, dict):
+        hw.update(fresh["hardware"])
+with open(target, "w") as f:
+    json.dump(state, f, indent=2)
+PYMERGE
+		chown 1000:1000 "$home/boneiostate.json" 2>/dev/null || true
 	fi
 	if [ -d "$KEEP_DIR/nodered" ]; then
 		mkdir -p "$home/docker/nodered/node-red/data" || true

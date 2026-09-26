@@ -53,6 +53,29 @@
 # That is the point. Earlier images only expired the account, which let whoever
 # logged in first with the shipped password choose the next one. For a bench
 # board you need to reach before that, set BONEIO_EMMC_PASSWORD.
+# Locked out / reinstall without losing the configuration:
+#
+#   BONEIO_RESET_ACCOUNTS=1
+#     Forgot the panel password — which the first-run wizard also made the SSH
+#   password — so there is no way in. The eMMC is NOT reflashed: the panel
+#   accounts are moved aside (users.json -> users.json.reset-<time>, nothing
+#   deleted), the boneio SSH login is locked as on a new device, and the board
+#   halts. Remove the card, boot, open the panel: the wizard asks for a new
+#   administrator and password. Configuration, secrets, MQTT accounts,
+#   Node-RED flows and certificates stay as they were. Takes about a minute.
+#
+#   BONEIO_KEEP_CONFIG=1
+#     Reinstall the system and keep the configuration. Before writing the
+#   eMMC the flasher copies /home/boneio/boneio (every YAML file,
+#   secrets.yaml, state), the Node-RED flows and the MQTT broker accounts off
+#   the old system, and puts them back on the new one — Home Assistant keeps
+#   connecting with the passwords it has. Panel accounts are not kept: the
+#   wizard runs again. If the old system cannot be read, nothing is written
+#   and the display says so; remove the setting to reinstall from scratch.
+#
+#   Remove either setting from the card afterwards, or the next flash does
+#   the same again.
+#
 # ---------------------------------------------------------------------------
 # THE SETTINGS ARE THE BLOCK BELOW. Everything above is documentation, and its
 # examples are indented for exactly that reason: only a line starting with
@@ -78,3 +101,5 @@
 # BONEIO_STATION_PASSWORD=Black
 # BONEIO_EMMC_PASSWORD=
 
+# BONEIO_RESET_ACCOUNTS=1
+# BONEIO_KEEP_CONFIG=1

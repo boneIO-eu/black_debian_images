@@ -42,6 +42,23 @@
 #       Neither helps an image built by setup_boneio.sh and booted straight
 #       from a card; that one takes BONEIO_USER_PASSWORD at build time.
 #
+#   BONEIO_RESET_ACCOUNTS=1
+#       Locked out: forgot the panel password, which the first-run wizard made
+#       the SSH one too. Does NOT write the image. Moves the panel accounts
+#       aside (users.json -> users.json.reset-<time>), locks the boneio login
+#       as a new image ships it, and halts. Boot without the card and the
+#       wizard runs again; configuration, secrets, MQTT accounts, Node-RED
+#       and certificates all stay. With BONEIO_EMMC_PASSWORD set, that
+#       password goes on the boneio login instead of the lock.
+#
+#   BONEIO_KEEP_CONFIG=1
+#       Reflash, keeping the configuration: /home/boneio/boneio (every YAML
+#       file, secrets.yaml, state), the Node-RED flows and the MQTT broker
+#       accounts are copied off the old eMMC first and put back on the new
+#       system, so Home Assistant keeps connecting. The panel accounts are
+#       not kept — the wizard runs again. If the old system cannot be read,
+#       nothing is written.
+#
 # Run with --help to print this.
 #
 
@@ -882,6 +899,8 @@ RCEOF
 		fi
 	fi
 
+	keep_config_restore
+
 	oled_msg "Setup system" "[=========-] 90%" "Finishing up..."
 	sync
 	umount /tmp/rootfs/ || umount -l /tmp/rootfs/ || true
@@ -1044,12 +1063,262 @@ cleanup_and_shutdown () {
 	halt -f
 }
 
+# =============================================================================
+# Recovery options — see BONEIO_RESET_ACCOUNTS and BONEIO_KEEP_CONFIG in the
+# header. Both exist for an owner locked out of their own controller: the
+# first-run wizard makes the panel password the SSH one too, so forgetting it
+# leaves no way in, and reflashing used to take the configuration with it.
+# Neither weakens anything: whoever holds an SD card and the power switch can
+# already write anything they like to the eMMC.
+# =============================================================================
+
+OLD_ROOT="/tmp/oldroot"
+KEEP_DIR="/tmp/boneio-keep"
+# /tmp is a tmpfs, so the kept copy lives in RAM (512 MB on a BeagleBone).
+KEEP_LIMIT_KB=65536
+KEEP_RESTORED=""
+
+# boneio.txt decides whether the eMMC is written at all, so it is read before
+# dd. fix_emmc_rootfs reads it again for the board version; sourcing twice is
+# harmless.
+read_boneio_txt () {
+	local mounted=false candidate
+	if ! mountpoint -q /boot/firmware 2>/dev/null; then
+		mkdir -p /boot/firmware
+		if mount /dev/mmcblk0p1 /boot/firmware -o ro 2>/dev/null; then
+			mounted=true
+		fi
+	fi
+	for candidate in /boot/firmware/boneio.txt /boot/boneio.txt; do
+		if [ -f "$candidate" ]; then
+			. "$candidate"
+			break
+		fi
+	done
+	if $mounted; then
+		umount /boot/firmware 2>/dev/null || true
+	fi
+}
+
+# The ext4 root of the system already on the eMMC, in OLD_ROOTFS.
+find_old_rootfs () {
+	local i part
+	OLD_ROOTFS=""
+	for i in 1 2 3; do
+		for part in "${DESTINATION}p${i}" "${DESTINATION}${i}"; do
+			if [ -b "$part" ] && [ "$(blkid -s TYPE -o value "$part" 2>/dev/null)" = "ext4" ]; then
+				OLD_ROOTFS="$part"
+				return 0
+			fi
+		done
+	done
+	return 1
+}
+
+# Stop without touching the eMMC any further, and say so on the display.
+recovery_abort () {
+	message="ERROR: $1 $2 — nothing was written to the eMMC" ; broadcast
+	oled_msg "$1" "$2" "eMMC unchanged"
+	umount "$OLD_ROOT" 2>/dev/null || true
+	if [ -n "$CYLON_PID" ]; then
+		kill $CYLON_PID > /dev/null 2>&1 || true
+	fi
+	sync
+	sleep 10
+	halt -f
+}
+
+# BONEIO_RESET_ACCOUNTS=1: the panel accounts go, everything else stays.
+reset_accounts () {
+	local rc=0 cfg stamp
+	message="INFO: BONEIO_RESET_ACCOUNTS=1 — resetting accounts, the eMMC is NOT reflashed" ; broadcast
+	if [ "${BONEIO_KEEP_CONFIG:-}" = "1" ]; then
+		message="WARN: BONEIO_KEEP_CONFIG ignored: a reset keeps everything anyway" ; broadcast
+	fi
+	oled_msg "Reset accounts" "Looking for the" "installed system"
+
+	find_old_rootfs || recovery_abort "No system" "on the eMMC"
+	# -p repairs only what is safe to repair unattended. A filesystem that
+	# needs more is not one to write to from here.
+	e2fsck -p "$OLD_ROOTFS" > /dev/null 2>&1 || rc=$?
+	if [ "$rc" -gt 1 ]; then
+		recovery_abort "eMMC needs a" "full fsck"
+	fi
+	mkdir -p "$OLD_ROOT"
+	mount "$OLD_ROOTFS" "$OLD_ROOT" -o noatime || recovery_abort "Cannot mount" "the eMMC"
+
+	cfg="$OLD_ROOT/home/boneio/boneio"
+	stamp=$(date +%s)
+	if [ -f "$cfg/users.json" ]; then
+		# Moved, not deleted: whoever reset by mistake can put it back.
+		mv "$cfg/users.json" "$cfg/users.json.reset-${stamp}" \
+			|| recovery_abort "Cannot move" "users.json"
+		message="INFO: Panel accounts moved to users.json.reset-${stamp}" ; broadcast
+	else
+		message="INFO: No users.json — the device was already waiting for the wizard" ; broadcast
+	fi
+
+	if [ -n "${BONEIO_EMMC_PASSWORD:-}" ]; then
+		if chroot "$OLD_ROOT" /bin/sh -c "echo 'boneio:${BONEIO_EMMC_PASSWORD}' | chpasswd" 2>/dev/null; then
+			chroot "$OLD_ROOT" chage -d "$(( $(date +%s) / 86400 ))" boneio 2>/dev/null || true
+			message="WARN: boneio SSH password set from BONEIO_EMMC_PASSWORD (bench boards only)" ; broadcast
+		else
+			message="ERROR: Could not set the boneio password" ; broadcast
+		fi
+	elif chroot "$OLD_ROOT" passwd -l boneio > /dev/null 2>&1; then
+		# Locked, as a new image ships it: the wizard's password becomes the
+		# SSH one again.
+		message="INFO: boneio SSH login locked until the first-run wizard sets it" ; broadcast
+	else
+		message="ERROR: Could not lock the boneio login" ; broadcast
+	fi
+
+	sync
+	umount "$OLD_ROOT" || umount -l "$OLD_ROOT" || true
+
+	if [ -n "$CYLON_PID" ]; then
+		kill $CYLON_PID > /dev/null 2>&1 || true
+	fi
+	message="INFO: ===============================================" ; broadcast
+	message="INFO: SUCCESS: accounts reset, configuration kept" ; broadcast
+	message="INFO: Remove the SD card, boot, open the panel" ; broadcast
+	message="INFO: ===============================================" ; broadcast
+	oled_msg "Accounts reset" "Remove SD card," "then open panel"
+	all_leds_on
+	sleep 10
+	sync
+	if [ -f /proc/sysrq-trigger ] ; then
+		echo s > /proc/sysrq-trigger || true
+		sleep 1
+	fi
+	halt -f
+}
+
+# BONEIO_KEEP_CONFIG=1, before dd: copy what makes this controller this one.
+keep_config_save () {
+	local home size
+	message="INFO: BONEIO_KEEP_CONFIG=1 — keeping the configuration across the reflash" ; broadcast
+	oled_msg "Keep config" "Reading the old" "configuration"
+
+	find_old_rootfs || recovery_abort "No old system" "to keep from"
+	mkdir -p "$OLD_ROOT"
+	# Read-only; noload as well when the journal is dirty, since a read-only
+	# mount would otherwise refuse to replay it.
+	mount "$OLD_ROOTFS" "$OLD_ROOT" -o ro 2>/dev/null \
+		|| mount "$OLD_ROOTFS" "$OLD_ROOT" -o ro,noload 2>/dev/null \
+		|| recovery_abort "Cannot read" "the old system"
+
+	home="$OLD_ROOT/home/boneio"
+	[ -f "$home/boneio/config.yaml" ] || recovery_abort "No config.yaml" "on the eMMC"
+
+	size=$(du -sk --exclude=venv --exclude='*.pkl' \
+		"$home/boneio" "$home/docker/nodered/node-red/data" 2>/dev/null \
+		| awk '{s+=$1} END {print s+0}')
+	if [ "$size" -gt "$KEEP_LIMIT_KB" ]; then
+		recovery_abort "Config too big" "(${size} kB)"
+	fi
+
+	rm -rf "$KEEP_DIR"
+	mkdir -p "$KEEP_DIR/config" "$KEEP_DIR/etc"
+	# Panel accounts and the token key stay behind: the owner goes through the
+	# wizard again, which is the point. The venv and caches belong to the
+	# old image.
+	( set -o pipefail
+	  tar -C "$home/boneio" --exclude=./venv --exclude='*.pkl' --exclude=__pycache__ \
+		--exclude=./users.json --exclude='./users.json.*' --exclude=./jwt_secret -cf - . \
+		| tar -C "$KEEP_DIR/config" -xpf - ) || recovery_abort "Cannot copy" "the configuration"
+	if [ -f "$home/boneiostate.json" ]; then
+		cp -a "$home/boneiostate.json" "$KEEP_DIR/" || recovery_abort "Cannot copy" "boneiostate.json"
+	fi
+	if [ -d "$home/docker/nodered/node-red/data" ]; then
+		mkdir -p "$KEEP_DIR/nodered"
+		( set -o pipefail
+		  tar -C "$home/docker/nodered/node-red/data" -cf - . | tar -C "$KEEP_DIR/nodered" -xpf - ) \
+			|| recovery_abort "Cannot copy" "Node-RED flows"
+	fi
+	# The broker accounts, so Home Assistant keeps connecting with what it has.
+	if [ -f "$OLD_ROOT/etc/mosquitto/passwd" ]; then
+		cp -a "$OLD_ROOT/etc/mosquitto/passwd" "$KEEP_DIR/etc/mosquitto-passwd" \
+			|| recovery_abort "Cannot copy" "MQTT accounts"
+	fi
+	if [ -f "$OLD_ROOT/etc/boneio/mqtt-boneio.pass" ]; then
+		cp -a "$OLD_ROOT/etc/boneio/mqtt-boneio.pass" "$KEEP_DIR/etc/mqtt-boneio.pass" \
+			|| recovery_abort "Cannot copy" "MQTT accounts"
+	fi
+
+	umount "$OLD_ROOT" || umount -l "$OLD_ROOT" || true
+	message="INFO: Kept $(find "$KEEP_DIR" -type f | wc -l) files (${size} kB) in RAM for the new system" ; broadcast
+}
+
+# BONEIO_KEEP_CONFIG=1, after dd, with the new rootfs at /tmp/rootfs.
+keep_config_restore () {
+	local home="/tmp/rootfs/home/boneio" failed=""
+	[ -d "$KEEP_DIR/config" ] || return 0
+	# After dd, as PID 1 under bash -e: no step may end the script (that is a
+	# kernel panic), so each one reports and the rest carry on.
+	oled_msg "Setup system" "[=========-] 88%" "Restoring config"
+
+	# The image's configuration goes whole: a file left from it would be read
+	# beside the kept ones (by an !include_dir, say). Its venv stays.
+	mkdir -p "$home/boneio" || true
+	find "$home/boneio" -mindepth 1 -maxdepth 1 ! -name venv -exec rm -rf {} + || true
+	( set -o pipefail
+	  tar -C "$KEEP_DIR/config" -cf - . | tar -C "$home/boneio" -xpf - ) || failed="config"
+	if [ -f "$KEEP_DIR/boneiostate.json" ]; then
+		cp -a "$KEEP_DIR/boneiostate.json" "$home/" || failed="$failed state"
+	fi
+	if [ -d "$KEEP_DIR/nodered" ]; then
+		mkdir -p "$home/docker/nodered/node-red/data" || true
+		find "$home/docker/nodered/node-red/data" -mindepth 1 -maxdepth 1 -exec rm -rf {} + || true
+		( set -o pipefail
+		  tar -C "$KEEP_DIR/nodered" -cf - . | tar -C "$home/docker/nodered/node-red/data" -xpf - ) \
+			|| failed="$failed node-red"
+	fi
+	if [ -f "$KEEP_DIR/etc/mosquitto-passwd" ] \
+		&& cp "$KEEP_DIR/etc/mosquitto-passwd" /tmp/rootfs/etc/mosquitto/passwd; then
+		chroot /tmp/rootfs chown root:mosquitto /etc/mosquitto/passwd 2>/dev/null || true
+		chmod 0640 /tmp/rootfs/etc/mosquitto/passwd || true
+		if [ -f "$KEEP_DIR/etc/mqtt-boneio.pass" ]; then
+			mkdir -p /tmp/rootfs/etc/boneio || true
+			cp -a "$KEEP_DIR/etc/mqtt-boneio.pass" /tmp/rootfs/etc/boneio/mqtt-boneio.pass || true
+		fi
+		# The broker keeps its accounts, and secrets.yaml came along with the
+		# config, so the per-device passwords drawn at first boot would only
+		# break Home Assistant's connection. Mark that as done.
+		mkdir -p /tmp/rootfs/var/lib/boneio || true
+		touch /tmp/rootfs/var/lib/boneio/mqtt-firstboot.done || true
+		message="INFO: Broker accounts kept; first-boot MQTT passwords skipped" ; broadcast
+	elif [ -f "$KEEP_DIR/etc/mosquitto-passwd" ]; then
+		failed="$failed mqtt"
+	fi
+	KEEP_RESTORED=1
+	if [ -n "$failed" ]; then
+		message="ERROR: Restoring the kept configuration failed for:${failed# }" ; broadcast
+		oled_msg "Restore failed" "${failed# }" "See serial log"
+		sleep 5
+	else
+		message="INFO: Configuration restored; the panel accounts start over with the wizard" ; broadcast
+	fi
+}
+
 ### Main ###
 
 stabilize_system
 startup_checks
+read_boneio_txt
+if [ "${BONEIO_RESET_ACCOUNTS:-}" = "1" ]; then
+	reset_accounts
+fi
 find_image_file
+if [ "${BONEIO_KEEP_CONFIG:-}" = "1" ]; then
+	keep_config_save
+fi
 FLASH_START_TIME=$(date +%s)
 flash_emmc
 fix_emmc_rootfs
+if [ -d "$KEEP_DIR/config" ] && [ -z "$KEEP_RESTORED" ]; then
+	# fix_emmc_rootfs gave up before it could restore, and the copy is in RAM.
+	message="ERROR: The kept configuration could not be restored and is lost" ; broadcast
+	oled_msg "Config NOT" "restored" "See serial log"
+fi
 station_boot_or_shutdown

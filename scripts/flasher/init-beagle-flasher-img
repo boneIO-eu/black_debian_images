@@ -51,6 +51,15 @@
 #       and certificates all stay. With BONEIO_EMMC_PASSWORD set, that
 #       password goes on the boneio login instead of the lock.
 #
+#   BONEIO_COLLECT_LOGS=1
+#       A controller that does not boot. Nothing on the eMMC is changed: the
+#       journal (log2ram's copy, plus anything written before log2ram
+#       mounted), a read-only fsck of both partitions, half-installed
+#       packages, applied migrations, uEnv.txt, this boot's dmesg and the
+#       configuration without secrets.yaml go to boneio-logs-<time>/ on the
+#       SD card's FAT partition, readable on any PC. Then it halts — or, with
+#       a reset or reinstall also set, carries on with that.
+#
 #   BONEIO_KEEP_CONFIG=1
 #       Reflash, keeping the configuration: /home/boneio/boneio (every YAML
 #       file, secrets.yaml, state), the Node-RED flows and the MQTT broker
@@ -1203,6 +1212,122 @@ reset_accounts () {
 	halt -f
 }
 
+# BONEIO_COLLECT_LOGS=1: read-only diagnostics of a controller that does not
+# boot, written to the SD card's FAT partition so a PC can open them.
+#
+# The journal lives in RAM (log2ram); the eMMC has log2ram's copy in
+# /var/hdd.log/journal, synced daily and at a clean shutdown, so the boot that
+# failed is usually not in it. What is: everything up to the last sync, and —
+# when the boot died before log2ram mounted — whatever journald wrote straight
+# to /var/log/journal on the root filesystem. Both are read.
+collect_logs () {
+	local sd_boot="/tmp/sdboot" work="/tmp/boneio-logs" name out free need rc=0 dir
+	message="INFO: BONEIO_COLLECT_LOGS=1 — reading logs off the eMMC (read-only)" ; broadcast
+	oled_msg "Collect logs" "Reading the" "eMMC system"
+
+	find_old_rootfs || recovery_abort "No system" "on the eMMC"
+	rm -rf "$work"
+	mkdir -p "$work"
+
+	{
+		echo "boneIO log collection — $(date -u '+%Y-%m-%d %H:%M:%S UTC') (the board's clock; it may be wrong)"
+		echo "Flasher: ${version_message}"
+		echo "Serial: $(tr -d '\0' 2>/dev/null < /proc/device-tree/serial-number || echo '?')"
+		echo
+		echo "== Partitions"
+		sfdisk -l "${DESTINATION}" 2>&1 || true
+		blkid "${DESTINATION}"* 2>&1 || true
+		echo
+		echo "== e2fsck -n ${OLD_ROOTFS} (read-only check, nothing repaired)"
+		e2fsck -n -f "$OLD_ROOTFS" 2>&1 || true
+		for part in "${DESTINATION}p1" "${DESTINATION}1"; do
+			if [ -b "$part" ] && [ "$(blkid -s TYPE -o value "$part" 2>/dev/null)" = "vfat" ]; then
+				echo
+				echo "== fsck.fat -n ${part}"
+				fsck.fat -n "$part" 2>&1 || true
+			fi
+		done
+	} > "$work/summary.txt" 2>&1
+
+	mkdir -p "$OLD_ROOT"
+	mount "$OLD_ROOTFS" "$OLD_ROOT" -o ro 2>/dev/null \
+		|| mount "$OLD_ROOTFS" "$OLD_ROOT" -o ro,noload 2>/dev/null \
+		|| recovery_abort "Cannot read" "the eMMC system"
+
+	{
+		echo
+		echo "== df"
+		df -h "$OLD_ROOT" 2>&1 || true
+		df -i "$OLD_ROOT" 2>&1 || true
+		echo
+		echo "== boneIO"
+		ls -d "$OLD_ROOT"/home/boneio/boneio/venv/lib/python3*/site-packages/boneio-*.dist-info 2>/dev/null \
+			| sed 's#.*/##' || true
+		echo
+		echo "== Applied system migrations"
+		ls "$OLD_ROOT/var/lib/boneio/migrations.d" 2>&1 || true
+		echo
+		echo "== dpkg --audit (packages left half-installed)"
+		dpkg --admindir="$OLD_ROOT/var/lib/dpkg" --audit 2>&1 || true
+		echo
+		echo "== uEnv.txt"
+		cat "$OLD_ROOT/boot/uEnv.txt" 2>&1 || true
+		echo
+		echo "== fstab"
+		cat "$OLD_ROOT/etc/fstab" 2>&1 || true
+	} >> "$work/summary.txt" 2>&1
+
+	# This boot, from the SD card: eMMC hardware errors show up here.
+	dmesg > "$work/dmesg-sd-boot.txt" 2>&1 || true
+
+	for dir in hdd.log/journal log/journal; do
+		[ -d "$OLD_ROOT/var/$dir" ] || continue
+		name=$(echo "$dir" | tr '/.' '--')
+		journalctl -D "$OLD_ROOT/var/$dir" --list-boots --no-pager > "$work/${name}-boots.txt" 2>&1 || true
+		journalctl -D "$OLD_ROOT/var/$dir" -o short-iso-precise --no-pager 2>/dev/null \
+			| gzip -6 > "$work/${name}-all.txt.gz" || true
+		journalctl -D "$OLD_ROOT/var/$dir" _TRANSPORT=kernel -o short-iso-precise --no-pager 2>/dev/null \
+			| gzip -6 > "$work/${name}-kernel.txt.gz" || true
+		journalctl -D "$OLD_ROOT/var/$dir" -p warning -o short-iso-precise --no-pager 2>/dev/null \
+			| gzip -6 > "$work/${name}-warnings.txt.gz" || true
+		journalctl -D "$OLD_ROOT/var/$dir" -u boneio -o short-iso-precise --no-pager 2>/dev/null \
+			| gzip -6 > "$work/${name}-boneio.txt.gz" || true
+	done
+	# Plain log files next to the journal (apt, dpkg), capped.
+	if [ -d "$OLD_ROOT/var/hdd.log" ]; then
+		tar -C "$OLD_ROOT/var/hdd.log" --exclude=./journal -czf "$work/var-log-files.tar.gz" . 2>/dev/null || true
+	fi
+	# The configuration, for support — without secrets.yaml, accounts and keys.
+	tar -C "$OLD_ROOT/home/boneio/boneio" --exclude=./venv --exclude='*.pkl' --exclude=__pycache__ \
+		--exclude=./secrets.yaml --exclude='./users.json*' --exclude='./jwt_secret*' --exclude=./.env \
+		-czf "$work/config-without-secrets.tar.gz" . 2>/dev/null || true
+
+	umount "$OLD_ROOT" || umount -l "$OLD_ROOT" || true
+
+	mkdir -p "$sd_boot"
+	mount /dev/mmcblk0p1 "$sd_boot" 2>/dev/null || recovery_abort "Cannot write" "the SD card"
+	name="boneio-logs-$(date -u +%Y%m%d-%H%M%S)"
+	out="$sd_boot/$name"
+	free=$(df -k "$sd_boot" | awk 'NR==2 {print $4}')
+	need=$(du -sk "$work" | awk '{print $1}')
+	# The FAT partition is small (tens of MB). The full exports go first when
+	# they do not fit; the summary, kernel, warnings and boneIO logs are what
+	# a diagnosis starts from.
+	if [ "$need" -gt $(( free - 512 )) ]; then
+		rm -f "$work"/*-all.txt.gz "$work/var-log-files.tar.gz"
+		need=$(du -sk "$work" | awk '{print $1}')
+		message="WARN: Not enough room on the SD card for the full journal; kept the essentials" ; broadcast
+	fi
+	mkdir -p "$out" && cp -r "$work"/. "$out"/ || rc=1
+	sync
+	umount "$sd_boot" || umount -l "$sd_boot" || true
+	if [ "$rc" -ne 0 ]; then
+		recovery_abort "Could not save" "logs to SD card"
+	fi
+	message="INFO: Logs saved on the SD card's boot partition: ${name}/ (${need} kB)" ; broadcast
+	oled_msg "Logs saved" "on the SD card" "${name#boneio-logs-}"
+}
+
 # BONEIO_KEEP_CONFIG=1, before dd: copy what makes this controller this one.
 keep_config_save () {
 	local home size
@@ -1337,6 +1462,21 @@ PYMERGE
 stabilize_system
 startup_checks
 read_boneio_txt
+if [ "${BONEIO_COLLECT_LOGS:-}" = "1" ]; then
+	collect_logs
+	# Read-only on its own. Combined with a reset or a reinstall, the logs are
+	# taken first, from the system as it was.
+	if [ "${BONEIO_RESET_ACCOUNTS:-}" != "1" ] && [ "${BONEIO_KEEP_CONFIG:-}" != "1" ]; then
+		if [ -n "$CYLON_PID" ]; then
+			kill $CYLON_PID > /dev/null 2>&1 || true
+		fi
+		all_leds_on
+		message="INFO: Done — remove the SD card and open boneio-logs-* on a PC" ; broadcast
+		sleep 10
+		sync
+		halt -f
+	fi
+fi
 if [ "${BONEIO_RESET_ACCOUNTS:-}" = "1" ]; then
 	reset_accounts
 fi

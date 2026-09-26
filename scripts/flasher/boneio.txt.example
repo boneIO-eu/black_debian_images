@@ -73,8 +73,18 @@
 #   wizard runs again. If the old system cannot be read, nothing is written
 #   and the display says so; remove the setting to reinstall from scratch.
 #
-#   Remove either setting from the card afterwards, or the next flash does
-#   the same again.
+#   BONEIO_COLLECT_LOGS=1
+#     A controller that does not boot: read its logs. The eMMC is only read.
+#   The journal, a read-only filesystem check, half-installed packages,
+#   uEnv.txt and the configuration (without secrets.yaml) are saved to a
+#   boneio-logs-<time> folder on this card's boot partition — put the card in
+#   a PC to open it. The journal lives in RAM and reaches the eMMC once a day
+#   and at a clean shutdown, so the boot that failed is often not in it; the
+#   days before are. Can be combined with either setting above; the logs are
+#   taken first.
+#
+#   Remove these settings from the card afterwards, or the next boot from it
+#   does the same again.
 #
 # ---------------------------------------------------------------------------
 # THE SETTINGS ARE THE BLOCK BELOW. Everything above is documentation, and its
@@ -103,3 +113,4 @@
 
 # BONEIO_RESET_ACCOUNTS=1
 # BONEIO_KEEP_CONFIG=1
+# BONEIO_COLLECT_LOGS=1

@@ -2,7 +2,15 @@
 ## BoneIO Black — build a new rootfs.img on the PC, without the BeagleBone.
 ##
 ## Usage:
-##   sudo BONEIO_VERSION=<x> ./scripts/build_rootfs_offline.sh <previous_rootfs.img> <new_rootfs.img> [--grow 3G] [--no-shrink] [--docker-store <tar[.zst]>]
+##   sudo BONEIO_VERSION=<x> ./scripts/build_rootfs_offline.sh <previous_rootfs.img> <new_rootfs.img> [--grow 3G] [--no-shrink] [--docker-store <tar[.zst]>] [--boneio-wheel <file.whl>]
+##
+## --boneio-wheel: install boneIO from a wheel instead of PyPI — one built from
+## a working tree with ../app_black/scripts/build_local_wheel.sh, to test
+## changes on hardware without releasing a dev version for each attempt. The
+## version comes from the wheel (BONEIO_VERSION may be left out). The image
+## records the wheel in /etc/boneio/local-build and is NOT for shipping.
+##   sudo ./scripts/build_rootfs_offline.sh rootfs-v1.6.0.dev19.img rootfs-test.img \
+##        --boneio-wheel ../app_black/dist-local/boneio-1.6.0.dev19-py3-none-any.whl
 ##
 ## --docker-store: replace the image's /var/lib/docker with a controller's —
 ## once, after a release moves a pinned container image, so flashed units do
@@ -52,6 +60,7 @@ OUT_IMG=""
 GROW="3G"
 SHRINK=true
 DOCKER_STORE=""
+BONEIO_WHEEL_SRC=""
 BONEIO_VERSION="${BONEIO_VERSION:-}"
 BOARD_CONFIG_VERSION="${BOARD_CONFIG_VERSION:-1.1}"
 
@@ -60,6 +69,7 @@ while [ $# -gt 0 ]; do
         --grow)      GROW="$2"; shift 2 ;;
         --no-shrink) SHRINK=false; shift ;;
         --docker-store) DOCKER_STORE="$2"; shift 2 ;;
+        --boneio-wheel) BONEIO_WHEEL_SRC="$2"; shift 2 ;;
         -h|--help)   grep '^##' "$0" | sed 's/^## \?//'; exit 0 ;;
         *)
             if   [ -z "$BASE_IMG" ]; then BASE_IMG="$1"
@@ -83,6 +93,15 @@ phase() { echo -e "\n${CYAN}══ $* ══${NC}"; }
 [ -f "$BASE_IMG" ] || die "$BASE_IMG does not exist"
 [ -e "$OUT_IMG" ] && die "$OUT_IMG already exists — refusing to overwrite"
 [ -z "$DOCKER_STORE" ] || [ -f "$DOCKER_STORE" ] || die "$DOCKER_STORE does not exist"
+if [ -n "$BONEIO_WHEEL_SRC" ]; then
+    [ -f "$BONEIO_WHEEL_SRC" ] || die "$BONEIO_WHEEL_SRC does not exist"
+    WHEEL_VERSION=$(basename "$BONEIO_WHEEL_SRC" | sed -n 's/^boneio-\([^-]*\)-.*\.whl$/\1/p')
+    [ -n "$WHEEL_VERSION" ] || die "$BONEIO_WHEEL_SRC is not named like a boneio wheel (boneio-<version>-...whl)"
+    [ -z "$BONEIO_VERSION" ] || [ "$BONEIO_VERSION" = "$WHEEL_VERSION" ] \
+        || die "BONEIO_VERSION=$BONEIO_VERSION but the wheel is $WHEEL_VERSION"
+    # Set, so the verification step checks the image got this version.
+    BONEIO_VERSION="$WHEEL_VERSION"
+fi
 
 for tool in systemd-nspawn losetup sfdisk e2fsck resize2fs dumpe2fs blkid rsync; do
     command -v "$tool" >/dev/null || die "missing tool: $tool"
@@ -178,6 +197,11 @@ fi
 BUILD="$MNT/root/boneio-build"
 mkdir -p "$BUILD/bin"
 rsync -a --exclude '*.pkl' "$REPO_DIR/scripts" "$REPO_DIR/configs" "$BUILD/"
+if [ -n "$BONEIO_WHEEL_SRC" ]; then
+    mkdir -p "$BUILD/wheels"
+    cp "$BONEIO_WHEEL_SRC" "$BUILD/wheels/"
+    warn "boneIO from a LOCAL WHEEL: $(basename "$BONEIO_WHEEL_SRC") — a test image, not for shipping"
+fi
 
 if [ -n "$DOCKER_STORE" ]; then
     info "Replacing the image's Docker store with $DOCKER_STORE"
@@ -415,6 +439,7 @@ SETUP_ENV=(--setenv=PATH=/root/boneio-build/bin:/usr/local/sbin:/usr/local/bin:/
            # No dockerd here: setup keeps the inherited Docker store as it is.
            --setenv=BONEIO_OFFLINE_BUILD=1)
 [ -n "$BONEIO_VERSION" ] && SETUP_ENV+=(--setenv=BONEIO_VERSION="$BONEIO_VERSION")
+[ -n "$BONEIO_WHEEL_SRC" ] && SETUP_ENV+=(--setenv=BONEIO_WHEEL="/root/boneio-build/wheels/$(basename "$BONEIO_WHEEL_SRC")")
 
 # iptables-nft opens a netlink socket even for `iptables -V`, and qemu-user
 # does not emulate netlink ("Failed to initialize nft: Protocol not
@@ -513,6 +538,12 @@ check "docker store inherited"               "[ -s '$MNT/var/lib/docker/image/ov
 if [ -n "$BONEIO_VERSION" ]; then
     GOT=$(nsp --chdir=/tmp /home/boneio/boneio/venv/bin/python3 -c 'import importlib.metadata as m; print(m.version("boneio"))' 2>/dev/null | tr -d '\r')
     check "boneio == $BONEIO_VERSION (got $GOT)" "[ '$GOT' = '$BONEIO_VERSION' ]"
+fi
+if [ -n "$BONEIO_WHEEL_SRC" ]; then
+    WHEEL_SHA=$(sha256sum "$BONEIO_WHEEL_SRC" | cut -d' ' -f1)
+    check "local wheel recorded in /etc/boneio/local-build" "grep -q '$WHEEL_SHA' '$MNT/etc/boneio/local-build'"
+else
+    check "no local-build marker (boneIO from PyPI)" "[ ! -e '$MNT/etc/boneio/local-build' ]"
 fi
 
 # ─── 5b. Container images the compose file needs ────────────────────────────
@@ -625,4 +656,5 @@ echo "${START} ${SECTORS}" | sfdisk -N "$ROOT_NUM" --no-reread --force "$OUT_IMG
 truncate -s $(( (START + SECTORS + 2048) * 512 )) "$OUT_IMG"
 
 info "Done: $OUT_IMG ($(du -h --apparent-size "$OUT_IMG" | cut -f1))"
+[ -z "$BONEIO_WHEEL_SRC" ] || warn "TEST IMAGE — boneIO from $(basename "$BONEIO_WHEEL_SRC"), not a release. Do not ship it."
 info "Next: sudo ./scripts/generate_all_images.sh $OUT_IMG <version> --emmc-flasher"

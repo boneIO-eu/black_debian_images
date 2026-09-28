@@ -74,7 +74,30 @@ SCRIPT_VERSION="2026-09-25.1"
 # is copied from this repo when a card is written, so changes there need no new
 # image — but anything in the boneIO application does, and that is what this
 # line decides.
+REQUESTED_BONEIO_VERSION="${BONEIO_VERSION:-}"
 BONEIO_VERSION="${BONEIO_VERSION:-1.6.0.dev19}"
+
+# A wheel built from a working tree (app_black/scripts/build_local_wheel.sh),
+# to test changes on a real controller or image without releasing a dev
+# version for each attempt. The version is read from the wheel itself, so
+# every check below compares against what is actually installed.
+#   sudo BONEIO_WHEEL=/tmp/boneio-1.6.0.dev19-py3-none-any.whl ./setup_boneio.sh
+BONEIO_WHEEL="${BONEIO_WHEEL:-}"
+if [ -n "$BONEIO_WHEEL" ]; then
+    if [ ! -f "$BONEIO_WHEEL" ]; then
+        echo "BONEIO_WHEEL=$BONEIO_WHEEL does not exist" >&2
+        exit 1
+    fi
+    BONEIO_VERSION="$(basename "$BONEIO_WHEEL" | sed -n 's/^boneio-\([^-]*\)-.*\.whl$/\1/p')"
+    if [ -z "$BONEIO_VERSION" ]; then
+        echo "Cannot read a boneio version from the file name $BONEIO_WHEEL" >&2
+        exit 1
+    fi
+    if [ -n "$REQUESTED_BONEIO_VERSION" ] && [ "$REQUESTED_BONEIO_VERSION" != "$BONEIO_VERSION" ]; then
+        echo "BONEIO_VERSION=$REQUESTED_BONEIO_VERSION but the wheel is $BONEIO_VERSION" >&2
+        exit 1
+    fi
+fi
 
 # --- Idempotent step markers ---
 MARKER_DIR="/var/lib/boneio/.setup.d"
@@ -629,8 +652,26 @@ log_info "9/12: Installing BoneIO application..."
 mkdir -p ${BONEIO_HOME}/boneio
 python3 -m venv ${BONEIO_HOME}/boneio/venv
 ${BONEIO_HOME}/boneio/venv/bin/pip install --upgrade pip
-log_info "   Installing boneio==${BONEIO_VERSION}"
-${BONEIO_HOME}/boneio/venv/bin/pip install --upgrade "boneio==${BONEIO_VERSION}"
+if [ -n "$BONEIO_WHEEL" ]; then
+    log_warn "   Installing boneio ${BONEIO_VERSION} from a LOCAL WHEEL: ${BONEIO_WHEEL}"
+    log_warn "   This is a test build, not a release — do not ship it."
+    # Dependencies from the index as usual; then the wheel again with
+    # --force-reinstall, since a release of the same version may already be
+    # installed and pip would otherwise call it satisfied and keep that one.
+    ${BONEIO_HOME}/boneio/venv/bin/pip install --upgrade "$BONEIO_WHEEL"
+    ${BONEIO_HOME}/boneio/venv/bin/pip install --force-reinstall --no-deps "$BONEIO_WHEEL"
+    mkdir -p /etc/boneio
+    {
+        echo "wheel: $(basename "$BONEIO_WHEEL")"
+        echo "sha256: $(sha256sum "$BONEIO_WHEEL" | cut -d' ' -f1)"
+        echo "installed: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+    } > /etc/boneio/local-build
+else
+    log_info "   Installing boneio==${BONEIO_VERSION}"
+    ${BONEIO_HOME}/boneio/venv/bin/pip install --upgrade "boneio==${BONEIO_VERSION}"
+    # A release replaces whatever local build was here before.
+    rm -f /etc/boneio/local-build
+fi
 
 # Say out loud what landed. The failure this guards against is not pip erroring
 # — it is pip succeeding with a version nobody intended, which then shows up

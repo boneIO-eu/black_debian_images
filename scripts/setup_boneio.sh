@@ -75,7 +75,7 @@ SCRIPT_VERSION="2026-09-25.1"
 # image — but anything in the boneIO application does, and that is what this
 # line decides.
 REQUESTED_BONEIO_VERSION="${BONEIO_VERSION:-}"
-BONEIO_VERSION="${BONEIO_VERSION:-1.6.0.dev19}"
+BONEIO_VERSION="${BONEIO_VERSION:-1.6.0.dev23}"
 
 # A wheel built from a working tree (app_black/scripts/build_local_wheel.sh),
 # to test changes on a real controller or image without releasing a dev

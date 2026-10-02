@@ -502,16 +502,11 @@ else
     mkdir -p ${BONEIO_HOME}/docker/nodered/caddy/config
     chown -R ${BONEIO_USER}:${BONEIO_USER} ${BONEIO_HOME}/docker
 
-    # Node-RED settings (small, stable — OK to write here)
-    cat > ${BONEIO_HOME}/docker/nodered/node-red/settings.js << 'EOF'
-module.exports = {
-  httpAdminRoot: "/nodered",
-  httpNodeRoot: "/nodered",
-  ui: { path: "ui" },
-};
-EOF
-
-    chown -R ${BONEIO_USER}:${BONEIO_USER} ${BONEIO_HOME}/docker
+    # No settings.js here. Migrations own it (1.3.0, 1.6.0, 1.6.34): the one
+    # they ship has adminAuth, delegated to boneIO. This step used to write a
+    # four-line file without it, and on an image built on a rootfs that had
+    # already been through setup it ran after 1.6.0 was recorded as applied,
+    # so the open file is what shipped — Node-RED's editor answered anyone.
     log_info "   Docker directories created"
     # NOTE: docker-compose.yaml, caddy config files (init-certs.sh, 502.html)
     # are installed by boneio-migrate in STEP 9 below.
@@ -1131,6 +1126,17 @@ for check_path in \
     fi
 done
 
+# Node-RED's editor must ask for a login. A settings.js without adminAuth is
+# an editor anyone on the network can deploy an exec node through.
+NODERED_SETTINGS="${BONEIO_HOME}/docker/nodered/node-red/settings.js"
+if grep -q "adminAuth" "$NODERED_SETTINGS" 2>/dev/null; then
+    log_info "   ✅ Node-RED settings require a login"
+else
+    log_error "   ❌ $NODERED_SETTINGS has no adminAuth (or is missing)"
+    log_error "      Migrations 1.6.0/1.6.34 install it; something wrote over it."
+    VALIDATE_OK=false
+fi
+
 # The old helper has to be GONE, not present.
 #
 # /usr/sbin/boneio-migrate took a migration plan from whoever called it, and
@@ -1229,6 +1235,23 @@ rm -rf /var/lib/dhcp/*
 rm -rf /var/lib/NetworkManager/*.lease
 rm -f /etc/ssh/ssh_host_*
 touch /etc/bbb.io/ssh_regenerate
+
+# Per-device secrets the application draws for itself, removed for the same
+# reason as the host keys: left in, every unit flashed from this image shares
+# them. The token secret above all — whoever has the image could sign an
+# administrator's login for every one of those controllers. boneIO draws a
+# new one, bound to the machine-id, on first start.
+rm -f "${BONEIO_HOME}/boneio/jwt_secret" "${BONEIO_HOME}/boneio/.jwt_secret.tmp"
+# Caddy's internal CA, its leaves and the hostname marker that decides whether
+# init-certs wipes them. With the marker gone the first start clears the PKI
+# and mints a CA of the device's own.
+CADDY_DATA="${BONEIO_HOME}/docker/nodered/caddy/data"
+rm -rf "${CADDY_DATA}/caddy/pki" "${CADDY_DATA}/caddy/certificates/local"
+rm -f "${CADDY_DATA}/last_hostname"
+if [ -e "${BONEIO_HOME}/boneio/jwt_secret" ] || [ -e "${CADDY_DATA}/caddy/pki" ]; then
+    log_error "❌ A per-device secret is still in the image; not sealing it."
+    exit 1
+fi
 find /var/log -type f -exec truncate -s 0 {} \;
 rm -rf /tmp/*
 rm -rf /var/tmp/*

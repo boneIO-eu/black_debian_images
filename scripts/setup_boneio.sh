@@ -1252,6 +1252,20 @@ if [ -e "${BONEIO_HOME}/boneio/jwt_secret" ] || [ -e "${CADDY_DATA}/caddy/pki" ]
     log_error "❌ A per-device secret is still in the image; not sealing it."
     exit 1
 fi
+
+# The base image's default account - which boneIO runs as - is in kmem, and
+# kmem reads /dev/mem: the kernel has no CONFIG_STRICT_DEVMEM, so that is all
+# of physical memory, root's included. Migration 1.6.37 takes it away on a
+# device; doing it here as well means no image ships with it, whatever order
+# the migrations ran in on the rootfs this was built from.
+if id -nG "${BONEIO_USER}" | tr ' ' '\n' | grep -qx kmem; then
+    gpasswd --delete "${BONEIO_USER}" kmem >/dev/null
+    log_info "   Removed ${BONEIO_USER} from kmem"
+fi
+if id -nG "${BONEIO_USER}" | tr ' ' '\n' | grep -qx kmem; then
+    log_error "❌ ${BONEIO_USER} is still in kmem; not sealing it."
+    exit 1
+fi
 find /var/log -type f -exec truncate -s 0 {} \;
 rm -rf /tmp/*
 rm -rf /var/tmp/*

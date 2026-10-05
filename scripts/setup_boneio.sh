@@ -1233,8 +1233,22 @@ rm -f /var/lib/dbus/machine-id
 ln -sf /etc/machine-id /var/lib/dbus/machine-id
 rm -rf /var/lib/dhcp/*
 rm -rf /var/lib/NetworkManager/*.lease
-rm -f /etc/ssh/ssh_host_*
-touch /etc/bbb.io/ssh_regenerate
+# Host keys are made by sshd's own unit, on the device, the first time it
+# starts: ssh-keygen -A creates only the keys that are missing. This used to be
+# bbbio-set-sysconf's job, through /etc/bbb.io/ssh_regenerate, and it never ran:
+# the unit is conditioned on /boot/firmware/sysconf.txt, and since that mount
+# became nofail (1.6.24) nothing orders it before the check — so a fresh image
+# booted with no host keys and sshd refused to start, every time. No marker
+# either, or sysconf would regenerate the keys on a later boot that won the
+# race and change the host's fingerprint under everyone who trusted it.
+mkdir -p /etc/systemd/system/ssh.service.d
+cat > /etc/systemd/system/ssh.service.d/10-boneio-hostkeys.conf <<'HOSTKEYS_EOF'
+[Service]
+ExecStartPre=
+ExecStartPre=/usr/bin/ssh-keygen -A
+ExecStartPre=/usr/sbin/sshd -t
+HOSTKEYS_EOF
+rm -f /etc/ssh/ssh_host_* /etc/bbb.io/ssh_regenerate
 
 # Per-device secrets the application draws for itself, removed for the same
 # reason as the host keys: left in, every unit flashed from this image shares

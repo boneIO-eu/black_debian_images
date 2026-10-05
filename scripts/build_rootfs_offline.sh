@@ -532,6 +532,8 @@ check "build sudo rule gone"                 "[ ! -e '$MNT/etc/sudoers.d/boneio-
 check "machine-id empty"                     "[ ! -s '$MNT/etc/machine-id' ]"
 check "SSH hardening drop-in present"       "[ -s '$MNT/etc/ssh/sshd_config.d/10-boneio-hardening.conf' ]"
 check "no SSH host keys"                     "! ls '$MNT'/etc/ssh/ssh_host_* >/dev/null 2>&1"
+check "sshd makes its own host keys"         "grep -q '^ExecStartPre=/usr/bin/ssh-keygen -A' '$MNT/etc/systemd/system/ssh.service.d/10-boneio-hostkeys.conf'"
+check "no sysconf key regeneration armed"    "[ ! -e '$MNT/etc/bbb.io/ssh_regenerate' ]"
 check "iptables back on nft"                  "[ \"\$(readlink '$MNT/etc/alternatives/iptables')\" = '${IPT_ALT_IP4:-/usr/sbin/iptables-nft}' ]"
 check "MQTT passwords armed for first boot"  "[ ! -e '$MNT/var/lib/boneio/mqtt-firstboot.done' ] && [ -L '$MNT/etc/systemd/system/multi-user.target.wants/boneio-mqtt-firstboot.service' ]"
 check "docker store inherited"               "[ -s '$MNT/var/lib/docker/image/overlay2/repositories.json' ]"

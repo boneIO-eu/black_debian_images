@@ -169,16 +169,25 @@ enable_ufw=yes
 ufw_allow_ssh=yes
 ```
 
-## boneio.txt — wersja płytki
+## boneio.txt — wersja płytki i typ sterownika
 
-Flasher automatycznie wykrywa wersję płytki BoneIO Black przez I2C probe
-(szuka DS2484 na I2C2 @ 0x18). Jeśli chcesz **wymusić** wersję — np. flashujesz
-sam BeagleBone bez podłączonej płytki input — stwórz plik `boneio.txt`
-na partycji boot (FAT32) karty SD:
+Jest jeden obraz dla wszystkich sterowników. Przy pierwszym starcie świeżego
+systemu — czy karta uruchamia sterownik, czy flashuje eMMC —
+`boneio-board-setup` dopasowuje go do płytki: wybiera config
+(`~/.cache/boneio_configs/<wersja>/<typ>/`), ustawia overlay pinów w `uEnv.txt`
+(jeden restart, jeśli się zmienił), na 1.x włącza moduły 1-Wire i wykrywa płytkę
+przekaźników sterowaną stanem niskim. Robi to raz; wpisów w `boneio.txt` nie
+trzeba potem usuwać.
+
+Wersję wykrywa przez I2C probe (DS2484 na I2C2 @ 0x18: jest → 1.1, brak → 0.8).
+Typ sterownika podaje stacja produkcyjna; bez niego sterownik startuje bez wyjść,
+a kreator pierwszego uruchomienia pyta, jaki to sterownik. Oba można wpisać w
+`boneio.txt` na partycji boot (FAT32) karty SD:
 
 ```bash
 # /boot/firmware/boneio.txt
 BOARD_VERSION=1.0
+DEVICE_TYPE=32x10
 ```
 
 **Priorytet detekcji:**
@@ -187,15 +196,17 @@ BOARD_VERSION=1.0
 
 **Obsługiwane wartości:**
 
-| BOARD_VERSION | Overlay | 1-Wire | Config version |
-|---------------|---------|--------|----------------|
-| `0.8` (domyślny) | `BONEIO-BLACK-PINS.dtbo` | GPIO | 0.8 |
-| `1.0` | `BONEIO-BLACK-PINS-v1.0.dtbo` | DS2484 (kernel) | 1.0 |
+| BOARD_VERSION | Overlay | 1-Wire | Config |
+|---------------|---------|--------|--------|
+| `0.8` (brak DS2484) | `BONEIO-BLACK-PINS-v0.4-v0.8.dtbo` | GPIO | `0.8/<typ>` (ina219) |
+| `1.0` | `BONEIO-BLACK-PINS-v1.0.dtbo` | DS2484 (kernel) | `1.0/<typ>` |
+| `1.1` (wykryty DS2484) | `BONEIO-BLACK-PINS-v1.0.dtbo` | DS2484 (kernel) | `1.1/<typ>` (buzzer) |
 
-Gdy flasher wykryje board v1.0 (przez `boneio.txt` lub I2C), automatycznie:
-- Zmienia overlay w `uEnv.txt`
-- Instaluje `/etc/modules-load.d/onewire.conf` (ds2482 + w1-therm)
-- Aktualizuje `version: 0.8` → `version: 1.0` w `config.yaml`
+| DEVICE_TYPE | Config |
+|-------------|--------|
+| `32x10`, `24x16`, `cover`, `cover_mix` | `<wersja>/<typ>` |
+| brak | `<wersja>/base` (bez wyjść), typ wybierany w kreatorze |
+
 
 Ten plik jest już na każdej karcie — **na partycji FAT `BOOT`**, czyli tej,
 którą widać po włożeniu karty do dowolnego PC (także Windows/macOS). Wszystkie

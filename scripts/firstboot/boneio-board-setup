@@ -1,0 +1,225 @@
+#!/bin/sh
+#
+# boneio-board-setup [ROOT] [BOOTFS] — fit one image to the board it runs on.
+#
+# The image carries every board's configuration in
+# ~/.cache/boneio_configs/<version>/<type>/. This picks one, once:
+#
+#   version  BOARD_VERSION in boneio.txt, or the I2C probe: a DS2484 at 0x18 on
+#            I2C2 is a 1.x board, stamped 1.1 (1.0 differs only by the buzzer,
+#            which is not on I2C — put BOARD_VERSION=1.0 in boneio.txt for it);
+#            none is a 0.4–0.8 board, stamped 0.8.
+#   type     DEVICE_TYPE in boneio.txt. The production station writes it, so a
+#            controller sold to someone arrives configured. Without it the
+#            board gets the outputless "base" config and the first-run wizard
+#            asks which controller this is (~/boneio/.board-type-pending).
+#
+# and sets the pin overlay in uEnv.txt for that version. U-Boot reads the
+# overlay before Linux starts, so a changed one costs one reboot — on a live
+# system this script asks for it; inside the flasher (ROOT given) it does not.
+#
+# Runs once: /var/lib/boneio/board-setup.done. Never replaces the configuration
+# of a controller that has panel accounts.
+#
+# boneio.txt is on FAT and anybody holding the card can write it, so it is read
+# as KEY=value lines and validated, never sourced.
+#
+#   ROOT    root of the system to set up: empty for the running one, or the
+#           flasher's /tmp/rootfs (the freshly written eMMC)
+#   BOOTFS  where boneio.txt is: /boot/firmware by default
+#
+set -u
+
+ROOT="${1:-}"
+BOOTFS="${2:-/boot/firmware}"
+BONEIO_HOME="$ROOT/home/boneio"
+TEMPLATES="$BONEIO_HOME/.cache/boneio_configs"
+CONFIG_DIR="$BONEIO_HOME/boneio"
+PENDING="$CONFIG_DIR/.board-type-pending"
+DONE="$ROOT/var/lib/boneio/board-setup.done"
+BONEIO_UID=1000
+
+log() {
+    echo "boneio-board-setup: $*"
+    if [ -z "$ROOT" ] && command -v logger >/dev/null 2>&1; then
+        logger -t boneio-board-setup -- "$*" || true
+    fi
+}
+
+[ -e "$DONE" ] && exit 0
+
+# The last KEY= line wins; whitespace and DOS line ends are dropped.
+setting() {
+    [ -r "$BOOTFS/boneio.txt" ] || return 0
+    sed -n "s/^[[:space:]]*$1=//p" "$BOOTFS/boneio.txt" | tr -d '\r[:space:]' | tail -n 1
+}
+
+# Whether something answers at 0x18 on I2C2: the DS2484 a 1.x board carries.
+# A kernel driver already bound to it counts too — i2cdetect then prints UU
+# and the ioctl says EBUSY, both of which mean the chip is there.
+has_ds2484() {
+    modprobe i2c-dev 2>/dev/null || true
+    if command -v i2cdetect >/dev/null 2>&1; then
+        i2cdetect -y -r 2 0x18 0x18 2>/dev/null | grep -Eq '^10:.* (18|UU)'
+        return
+    fi
+    [ -e /dev/i2c-2 ] || return 1
+    python3 - <<'PY' 2>/dev/null
+import errno, fcntl, os, sys
+fd = os.open("/dev/i2c-2", os.O_RDWR)
+try:
+    fcntl.ioctl(fd, 0x0703, 0x18)
+    os.read(fd, 1)
+except OSError as exc:
+    sys.exit(0 if exc.errno == errno.EBUSY else 1)
+finally:
+    os.close(fd)
+PY
+}
+
+# Whether the relay board drives its relays active-low: with the MCP23017 at
+# 0x23 still in its power-on input mode, GPIOA reads 0xff through the board's
+# pull-ups.
+relays_active_low() {
+    if command -v i2cget >/dev/null 2>&1; then
+        [ "$(i2cget -y 2 0x23 0x12 2>/dev/null)" = "0xff" ]
+        return
+    fi
+    python3 - <<'PY' 2>/dev/null
+import fcntl, os, sys
+fd = os.open("/dev/i2c-2", os.O_RDWR)
+try:
+    fcntl.ioctl(fd, 0x0703, 0x23)
+    os.write(fd, b"\x12")
+    sys.exit(0 if os.read(fd, 1) == b"\xff" else 1)
+except OSError:
+    sys.exit(1)
+finally:
+    os.close(fd)
+PY
+}
+
+# --- version and type ------------------------------------------------------
+
+VERSION="$(setting BOARD_VERSION)"
+case "$VERSION" in
+    0.8|1.0|1.1|"") ;;
+    *) log "unknown BOARD_VERSION=$VERSION in boneio.txt, probing instead"; VERSION="" ;;
+esac
+if [ -z "$VERSION" ]; then
+    if has_ds2484; then VERSION=1.1; else VERSION=0.8; fi
+    log "board version $VERSION (I2C probe)"
+else
+    log "board version $VERSION (boneio.txt)"
+fi
+
+TYPE="$(setting DEVICE_TYPE)"
+case "$TYPE" in
+    32x10|24x16|cover|cover_mix|"") ;;
+    *) log "unknown DEVICE_TYPE=$TYPE in boneio.txt, the wizard will ask"; TYPE="" ;;
+esac
+
+# --- configuration -----------------------------------------------------------
+
+if [ -s "$CONFIG_DIR/users.json" ]; then
+    log "panel accounts exist, configuration left as it is"
+else
+    TEMPLATE="$TEMPLATES/$VERSION/${TYPE:-base}"
+    if [ ! -f "$TEMPLATE/config.yaml" ]; then
+        log "no configuration template at $TEMPLATE, leaving the image's"
+    else
+        mkdir -p "$CONFIG_DIR"
+        # The image's own configuration goes, apart from secrets.yaml: the
+        # broker password in it is this device's, or will be once
+        # boneio-mqtt-firstboot (ordered after this) has drawn it.
+        find "$CONFIG_DIR" -maxdepth 1 -type f \
+            \( -name '*.yaml' -o -name '*.cache.pkl' -o -name state.json -o -name .board-type-pending \) \
+            ! -name secrets.yaml -delete
+        for f in "$TEMPLATE"/*.yaml "$TEMPLATE"/*.cache.pkl; do
+            [ -e "$f" ] || continue
+            [ "$(basename "$f")" = secrets.yaml ] && [ -e "$CONFIG_DIR/secrets.yaml" ] && continue
+            cp -p "$f" "$CONFIG_DIR/"
+        done
+        if [ -z "$TYPE" ]; then
+            echo "$VERSION" > "$PENDING"
+            log "no DEVICE_TYPE: base configuration for $VERSION, the wizard asks for the type"
+        else
+            log "configuration $VERSION/$TYPE"
+        fi
+        chown -R "$BONEIO_UID:$BONEIO_UID" "$CONFIG_DIR" 2>/dev/null || true
+    fi
+fi
+
+# --- 1.x hardware ------------------------------------------------------------
+
+case "$VERSION" in
+    1.*)
+        # The kernel drives 1-Wire through the DS2484.
+        if [ ! -f "$ROOT/etc/modules-load.d/onewire.conf" ]; then
+            mkdir -p "$ROOT/etc/modules-load.d"
+            printf 'ds2482\nw1-therm\n' > "$ROOT/etc/modules-load.d/onewire.conf"
+            log "1-Wire modules enabled (ds2482, w1-therm)"
+        fi
+        if relays_active_low; then
+            STATE_FILE="$BONEIO_HOME/boneiostate.json" python3 - <<'PY' && log "relay board is active-low, recorded"
+import json, os
+path = os.environ["STATE_FILE"]
+try:
+    with open(path) as f:
+        state = json.load(f)
+except (OSError, ValueError):
+    state = {}
+hardware = state.setdefault("hardware", {})
+for address in ("0x23", "0x24", "0x25"):
+    hardware[f"mcp_{address}_inverted"] = True
+with open(path, "w") as f:
+    json.dump(state, f, indent=2)
+PY
+            chown "$BONEIO_UID:$BONEIO_UID" "$BONEIO_HOME/boneiostate.json" 2>/dev/null || true
+        fi
+        ;;
+esac
+
+# --- pin overlay -------------------------------------------------------------
+
+case "$VERSION" in
+    0.8) OVERLAY=BONEIO-BLACK-PINS-v0.4-v0.8.dtbo ;;
+    *)   OVERLAY=BONEIO-BLACK-PINS-v1.0.dtbo ;;
+esac
+# Where U-Boot finds overlays: the kernel's dtbs, or the older /lib/firmware.
+overlay_installed() {
+    for f in "$ROOT"/boot/dtbs/*/"$1" "$ROOT"/boot/dtbs/*/overlays/"$1" "$ROOT"/lib/firmware/"$1"; do
+        [ -e "$f" ] && return 0
+    done
+    return 1
+}
+REBOOT=false
+UENV=""
+for candidate in "$ROOT/boot/firmware/uEnv.txt" "$ROOT/boot/uEnv.txt"; do
+    [ -f "$candidate" ] && UENV="$candidate" && break
+done
+if [ -z "$UENV" ]; then
+    log "no uEnv.txt, overlay not set"
+elif ! overlay_installed "$OVERLAY"; then
+    log "overlay $OVERLAY is not installed, uEnv.txt left as it is"
+elif grep -q "^uboot_overlay_addr0=\(.*/\)\{0,1\}$OVERLAY[[:space:]]*$" "$UENV"; then
+    log "overlay already $OVERLAY"
+else
+    sed -i "s|^uboot_overlay_addr0=.*BONEIO-BLACK-PINS[^[:space:]]*|uboot_overlay_addr0=$OVERLAY|" "$UENV"
+    log "overlay set to $OVERLAY"
+    REBOOT=true
+fi
+
+# --- done --------------------------------------------------------------------
+
+# Recorded before any reboot, so a board that cannot come back up on the new
+# overlay is not sent round the same loop.
+mkdir -p "$(dirname "$DONE")"
+echo "version=$VERSION type=${TYPE:-ask}" > "$DONE"
+sync
+
+if [ "$REBOOT" = true ] && [ -z "$ROOT" ]; then
+    log "rebooting onto the new overlay"
+    systemctl --no-block reboot
+fi
+exit 0

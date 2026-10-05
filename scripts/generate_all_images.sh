@@ -1,9 +1,12 @@
 #!/bin/bash
-# Script to generate all BoneIO Black image variants from a source image
+# Script to generate the BoneIO Black images from a source image: one SD card
+# image, and with --emmc-flasher one eMMC flasher. Every board gets the same
+# image; boneio-board-setup fits it to the board at first boot (boneio.txt
+# DEVICE_TYPE / BOARD_VERSION, or an I2C probe and the first-run wizard).
 # Usage: ./generate_all_images.sh <source_image.img> [version] [--emmc-flasher]
 #
 # Options:
-#   --emmc-flasher       Also generate eMMC flasher images for each variant
+#   --emmc-flasher       Also generate the eMMC flasher image
 #   --allow-cold-cache   Build even if the config caches cannot be warmed.
 #                        The board then validates its config on first boot,
 #                        which costs 20-30 s before it comes up.
@@ -17,13 +20,13 @@ set -e
 # Parse arguments
 SOURCE_IMAGE=""
 VERSION="1.0.1"
-# Which board-config set goes into the images: configs/<BOARD_CONFIG_VERSION>/.
-# This is the hardware revision the configs describe, not the image version
-# above. Boards coming off the line now are 1.1; export BOARD_CONFIG_VERSION=1.0
-# to build images for the older revision.
+# The revision of the default configuration the image carries until its first
+# boot replaces it with the board's own. Every revision's configs are in the
+# image either way (setup_boneio.sh installs them all).
 BOARD_CONFIG_VERSION="${BOARD_CONFIG_VERSION:-1.1}"
+# The variant that default configuration is.
+DEFAULT_DEVICE="32x10"
 GENERATE_EMMC_FLASHER=false
-ONLY_DEVICE=""
 ALLOW_COLD_CACHE=false
 
 while [ $# -gt 0 ]; do
@@ -31,10 +34,6 @@ while [ $# -gt 0 ]; do
         --emmc-flasher)
             GENERATE_EMMC_FLASHER=true
             shift
-            ;;
-        --only)
-            ONLY_DEVICE="$2"
-            shift 2
             ;;
         --allow-cold-cache)
             ALLOW_COLD_CACHE=true
@@ -134,14 +133,6 @@ mkdir -p "$MOUNT_POINT"
 # even if a command fails mid-function under `set -e`.
 LOOP_DEVICE=""
 FLASHER_LOOP=""
-
-# Device types to generate (in order: 32x10 first)
-DEVICE_TYPES=(
-    "32x10"
-    "24x16"
-    "cover"
-    "cover_mix"
-)
 
 # Output directory (same as source image)
 OUTPUT_DIR="$(dirname "$(realpath "$SOURCE_IMAGE")")"
@@ -356,8 +347,8 @@ apply_device_config() {
     if [ -d "$SCRIPT_DIR/../configs/$BOARD_CONFIG_VERSION/$device_name" ]; then
         example_dir="$SCRIPT_DIR/../configs/$BOARD_CONFIG_VERSION/$device_name"
     # 2. Check /home/boneio/.cache/boneio_configs inside the mounted image
-    elif [ -d "$MOUNT_POINT/home/boneio/.cache/boneio_configs/$device_name" ]; then
-        example_dir="$MOUNT_POINT/home/boneio/.cache/boneio_configs/$device_name"
+    elif [ -d "$MOUNT_POINT/home/boneio/.cache/boneio_configs/$BOARD_CONFIG_VERSION/$device_name" ]; then
+        example_dir="$MOUNT_POINT/home/boneio/.cache/boneio_configs/$BOARD_CONFIG_VERSION/$device_name"
     # 3. Fallback to venv example_config
     else
         for site_pkg in "$MOUNT_POINT"/home/boneio/boneio/venv/lib/python*/site-packages/boneio/example_config; do
@@ -469,7 +460,7 @@ install_boneio_txt() {
 create_emmc_flasher() {
     local sdcard_img="$1"
     local device_name="$2"
-    local flasher_name="${OUTPUT_DIR}/${BASE_NAME}-${device_name}-emmc-flasher.img"
+    local flasher_name="${OUTPUT_DIR}/${BASE_NAME}-emmc-flasher.img"
     
     print_info "Creating eMMC flasher for $device_name..."
     
@@ -629,7 +620,7 @@ process_device_type() {
     local device_name="$1"
     local device_config="$2"
     
-    local output_name="${OUTPUT_DIR}/${BASE_NAME}-${device_name}-sdcard.img"
+    local output_name="${OUTPUT_DIR}/${BASE_NAME}-sdcard.img"
     
     echo ""
     echo "========================================"
@@ -707,15 +698,12 @@ trap cleanup EXIT
 # Main execution
 echo ""
 echo "========================================"
-echo "  BoneIO Black Image Generator v2.0"
+echo "  BoneIO Black Image Generator v3.0"
 echo "========================================"
 echo "Source image:      $SOURCE_IMAGE"
 echo "Version:           $VERSION"
 echo "Output directory:  $OUTPUT_DIR"
 echo "Generate flasher:  $GENERATE_EMMC_FLASHER"
-if [ -n "$ONLY_DEVICE" ]; then
-    echo "Only device:       $ONLY_DEVICE"
-fi
 echo ""
 
 # Warm the config caches from app_black, freshly, every build.
@@ -789,13 +777,7 @@ if failed:
 
 # Every variant this run will touch. tester is always included: the eMMC flasher
 # image carries the tester config, and --only does not turn that off.
-CACHE_VARIANTS=()
-for device_name in "${DEVICE_TYPES[@]}"; do
-    if [ -z "$ONLY_DEVICE" ] || [ "$device_name" = "$ONLY_DEVICE" ]; then
-        CACHE_VARIANTS+=("$device_name")
-    fi
-done
-CACHE_VARIANTS+=("tester")
+CACHE_VARIANTS=("$DEFAULT_DEVICE" "tester")
 
 if refresh_config_caches "${CACHE_VARIANTS[@]}"; then
     print_info "Config caches warmed."
@@ -809,14 +791,7 @@ else
     exit 1
 fi
 
-# Process each device type in defined order (32x10 first)
-for device_name in "${DEVICE_TYPES[@]}"; do
-    # Skip devices not matching --only filter
-    if [ -n "$ONLY_DEVICE" ] && [ "$device_name" != "$ONLY_DEVICE" ]; then
-        continue
-    fi
-    process_device_type "$device_name" "$device_name"
-done
+process_device_type "$DEFAULT_DEVICE" "$DEFAULT_DEVICE"
 
 echo ""
 echo "========================================"

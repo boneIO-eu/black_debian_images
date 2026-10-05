@@ -1,0 +1,21 @@
+# Installed by setup_boneio.sh. See /usr/local/sbin/boneio-board-setup.
+#
+# boneio.txt is on /boot/firmware, which fstab mounts nofail, and nofail is not
+# ordered before local-fs.target — so the mount is named here. Wants, not
+# Requires: a FAT partition that cannot be mounted means no boneio.txt, which
+# the script handles by probing the board, not a reason to skip setting it up.
+[Unit]
+Description=boneIO: fit the image to this board (first boot)
+DefaultDependencies=no
+Wants=boot-firmware.mount
+After=local-fs.target boot-firmware.mount systemd-modules-load.service
+Before=boneio-mqtt-firstboot.service mosquitto.service boneio.service
+ConditionPathExists=!/var/lib/boneio/board-setup.done
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/boneio-board-setup
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

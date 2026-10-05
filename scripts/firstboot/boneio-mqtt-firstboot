@@ -38,7 +38,7 @@ printf '%s\n' "$BONEIO_PW" > /etc/boneio/mqtt-boneio.pass
 chmod 0600 /etc/boneio/mqtt-boneio.pass
 
 # The live config and the per-board copies a board switch installs from.
-for dir in "$BONEIO_HOME/boneio" "$BONEIO_HOME"/.cache/boneio_configs/*; do
+for dir in "$BONEIO_HOME/boneio" "$BONEIO_HOME"/.cache/boneio_configs/*/*; do
     secrets="$dir/secrets.yaml"
     [ -d "$dir" ] || continue
     if [ -f "$secrets" ] && grep -q '^mqtt_password:' "$secrets"; then

@@ -220,10 +220,10 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Board-config set to take the tester config from — see generate_all_images.sh.
 BOARD_CONFIG_VERSION="${BOARD_CONFIG_VERSION:-1.1}"
-if [ -d "/tmp/flasher_rootfs/home/boneio/.cache/boneio_configs/tester" ]; then
+if [ -d "/tmp/flasher_rootfs/home/boneio/.cache/boneio_configs/$BOARD_CONFIG_VERSION/tester" ]; then
     rm -f /tmp/flasher_rootfs/home/boneio/boneio/*.yaml /tmp/flasher_rootfs/home/boneio/boneio/*.cache.pkl
-    cp /tmp/flasher_rootfs/home/boneio/.cache/boneio_configs/tester/*.yaml /tmp/flasher_rootfs/home/boneio/boneio/
-    cp /tmp/flasher_rootfs/home/boneio/.cache/boneio_configs/tester/*.cache.pkl /tmp/flasher_rootfs/home/boneio/boneio/ 2>/dev/null || true
+    cp /tmp/flasher_rootfs/home/boneio/.cache/boneio_configs/$BOARD_CONFIG_VERSION/tester/*.yaml /tmp/flasher_rootfs/home/boneio/boneio/
+    cp /tmp/flasher_rootfs/home/boneio/.cache/boneio_configs/$BOARD_CONFIG_VERSION/tester/*.cache.pkl /tmp/flasher_rootfs/home/boneio/boneio/ 2>/dev/null || true
     chown -R 1000:1000 /tmp/flasher_rootfs/home/boneio/boneio/* 2>/dev/null || true
     echo "Applied tester config to SD card rootfs"
 elif [ -d "$SCRIPT_DIR/../configs/$BOARD_CONFIG_VERSION/tester" ]; then

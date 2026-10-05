@@ -597,7 +597,7 @@ fi
 # runs it.
 log_info "6b/12: Installing per-device MQTT passwords for first boot..."
 FIRSTBOOT_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")/firstboot"
-for fb in boneio-mqtt-firstboot boneio-mqtt-firstboot.service; do
+for fb in boneio-mqtt-firstboot boneio-mqtt-firstboot.service boneio-board-setup boneio-board-setup.service; do
     if [ ! -f "$FIRSTBOOT_SRC/$fb" ]; then
         mkdir -p /tmp/boneio-firstboot
         curl -fsSL "https://raw.githubusercontent.com/boneIO-eu/black_debian_images/main/scripts/firstboot/$fb" \
@@ -610,6 +610,15 @@ install -o root -g root -m 0644 "$FIRSTBOOT_SRC/boneio-mqtt-firstboot.service" /
 systemctl enable boneio-mqtt-firstboot.service 2>/dev/null || true
 install -d /var/lib/boneio
 [ -e /var/lib/boneio/mqtt-firstboot.done ] || echo "disarmed by setup_boneio.sh" > /var/lib/boneio/mqtt-firstboot.done
+
+# Fits the one image to the board at first boot: config variant, revision and
+# pin overlay (boneio.txt DEVICE_TYPE / BOARD_VERSION, or an I2C probe).
+# Disarmed the same way, so a re-run on a controller in service never swaps
+# its configuration; sealing arms it.
+install -o root -g root -m 0755 "$FIRSTBOOT_SRC/boneio-board-setup" /usr/local/sbin/boneio-board-setup
+install -o root -g root -m 0644 "$FIRSTBOOT_SRC/boneio-board-setup.service" /etc/systemd/system/boneio-board-setup.service
+systemctl enable boneio-board-setup.service 2>/dev/null || true
+[ -e /var/lib/boneio/board-setup.done ] || echo "disarmed by setup_boneio.sh" > /var/lib/boneio/board-setup.done
 
 # Steps 7-8 (journald, sudoers, OLED, systemd services) are applied below
 # by boneio-migrate after pip install. No heredocs needed here.
@@ -710,8 +719,10 @@ fi
 # Set initial default 32x10 config in /home/boneio/boneio/
 rm -f ${BONEIO_HOME}/boneio/__init__.py 2>/dev/null || true
 rm -rf ${BONEIO_HOME}/boneio/__pycache__ 2>/dev/null || true
-if [ -d "${BONEIO_HOME}/.cache/boneio_configs/32x10" ]; then
-    cp ${BONEIO_HOME}/.cache/boneio_configs/32x10/*.yaml ${BONEIO_HOME}/boneio/ 2>/dev/null || true
+# A default until boneio-board-setup fits the board at first boot.
+DEFAULT_CONFIG="${BONEIO_HOME}/.cache/boneio_configs/${BOARD_CONFIG_VERSION:-1.1}/32x10"
+if [ -d "$DEFAULT_CONFIG" ]; then
+    cp "$DEFAULT_CONFIG"/*.yaml ${BONEIO_HOME}/boneio/ 2>/dev/null || true
 fi
 
 # Point the app config at this device's broker password.
@@ -727,7 +738,7 @@ fi
 # answer decides whether anything may be touched at all.
 MQTT_STALE_CONFIGS=()
 for mqtt_cfg in ${BONEIO_HOME}/boneio/mqtt.yaml \
-                ${BONEIO_HOME}/.cache/boneio_configs/*/mqtt.yaml; do
+                ${BONEIO_HOME}/.cache/boneio_configs/*/*/mqtt.yaml; do
     [ -f "$mqtt_cfg" ] || continue
     grep -q '^password: boneio123$' "$mqtt_cfg" && MQTT_STALE_CONFIGS+=("$mqtt_cfg")
 done
@@ -860,29 +871,44 @@ fi
 log_info "   Pre-compiling Python bytecode..."
 ${BONEIO_HOME}/boneio/venv/bin/python3 -m compileall -q ${BONEIO_HOME}/boneio/venv
 
-# Install BoneIO configs for all variants (32x10, 24x16, cover, cover_mix, tester)
+# Install every board's configs: ~/.cache/boneio_configs/<revision>/<variant>/.
+# One image serves every board; boneio-board-setup picks the one this board
+# needs at first boot, and the wizard copies a variant from here when the card
+# did not say which controller it is ("base" is the outputless stand-in).
 log_info "   Installing BoneIO configs in ${BONEIO_HOME}/.cache/boneio_configs/..."
 CONFIGS_DIR="${BONEIO_HOME}/.cache/boneio_configs"
+rm -rf "$CONFIGS_DIR"
 mkdir -p "$CONFIGS_DIR"
 
-# Board revision whose configs get installed. The repo keeps one directory per
-# revision (configs/1.0, configs/1.1); the device-side cache stays flat, so the
-# rest of the tooling does not need to know which one was picked.
+# The revision a build-time default config is taken from (above), not a limit
+# on what gets installed.
 BOARD_CONFIG_VERSION="${BOARD_CONFIG_VERSION:-1.1}"
-log_info "   Board config revision: ${BOARD_CONFIG_VERSION}"
+BOARD_REVISIONS="0.8 1.0 1.1"
+BOARD_VARIANTS="base 32x10 24x16 cover cover_mix tester"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")"
 if [ -n "$SCRIPT_DIR" ] && [ -d "$SCRIPT_DIR/../configs/$BOARD_CONFIG_VERSION" ]; then
-    cp -r "$SCRIPT_DIR/../configs/$BOARD_CONFIG_VERSION"/* "$CONFIGS_DIR/"
+    for revision in $BOARD_REVISIONS; do
+        [ -d "$SCRIPT_DIR/../configs/$revision" ] || continue
+        mkdir -p "$CONFIGS_DIR/$revision"
+        cp -r "$SCRIPT_DIR/../configs/$revision"/* "$CONFIGS_DIR/$revision/"
+    done
 else
     # Fallback when running piped via curl: download configs from GitHub
-    for variant in 32x10 24x16 cover cover_mix tester; do
-        mkdir -p "$CONFIGS_DIR/$variant"
-        for f in config.yaml event.yaml binary_sensor.yaml mqtt.yaml secrets.yaml adc.yaml output32x10A.yaml output24x16A.yaml outputCover.yaml outputCoverMix.yaml cover.yaml; do
-            curl -fsSL "https://raw.githubusercontent.com/boneIO-eu/black_debian_images/main/configs/$BOARD_CONFIG_VERSION/$variant/$f" -o "$CONFIGS_DIR/$variant/$f" 2>/dev/null || true
+    for revision in $BOARD_REVISIONS; do
+        for variant in $BOARD_VARIANTS; do
+            mkdir -p "$CONFIGS_DIR/$revision/$variant"
+            for f in config.yaml event.yaml binary_sensor.yaml mqtt.yaml secrets.yaml adc.yaml output32x10A.yaml output24x16A.yaml outputCover.yaml outputCoverMix.yaml cover.yaml; do
+                curl -fsSL "https://raw.githubusercontent.com/boneIO-eu/black_debian_images/main/configs/$revision/$variant/$f" -o "$CONFIGS_DIR/$revision/$variant/$f" 2>/dev/null || true
+            done
         done
     done
 fi
+# The repo's caches were built against whatever boneIO the build machine had;
+# the ones that count are made below, against the installed package.
+find "$CONFIGS_DIR" -name '*.cache.pkl' -delete 2>/dev/null || true
+# A variant a revision does not have (0.8 has no tester) is an empty directory.
+find "$CONFIGS_DIR" -mindepth 2 -maxdepth 2 -type d -empty -delete 2>/dev/null || true
 # A 404 leaves curl's -o file behind as an empty stub; drop those so a missing
 # variant looks missing instead of looking like an empty config.
 find "$CONFIGS_DIR" -type f -name '*.yaml' -size 0 -delete 2>/dev/null || true
@@ -899,16 +925,16 @@ import boneio.core.config.yaml_util as y
 # 1. Warm schema cache (~/.cache/boneio/schema.pkl)
 y._load_schema()
 
-# 2. Warm config cache for each of the 5 variants in ~/.cache/boneio_configs
+# 2. Warm the config cache of every revision/variant in ~/.cache/boneio_configs
+import glob
 configs_dir = os.path.expanduser(\"~/.cache/boneio_configs\")
-for variant in [\"32x10\", \"24x16\", \"cover\", \"cover_mix\", \"tester\"]:
-    cfg_path = os.path.join(configs_dir, variant, \"config.yaml\")
-    if os.path.isfile(cfg_path):
-        try:
-            y.load_config_from_file(cfg_path)
-            print(f\"   Cached {variant}: {cfg_path}\")
-        except Exception as e:
-            print(f\"   Warning: failed to cache {variant}: {e}\")
+for cfg_path in sorted(glob.glob(os.path.join(configs_dir, \"*\", \"*\", \"config.yaml\"))):
+    variant = os.path.relpath(os.path.dirname(cfg_path), configs_dir)
+    try:
+        y.load_config_from_file(cfg_path)
+        print(f\"   Cached {variant}: {cfg_path}\")
+    except Exception as e:
+        print(f\"   Warning: failed to cache {variant}: {e}\")
 
 # 3. If /home/boneio/boneio/config.yaml is present, warm it as well
 main_cfg = \"${BONEIO_HOME}/boneio/config.yaml\"
@@ -1284,7 +1310,7 @@ find /var/log -type f -exec truncate -s 0 {} \;
 rm -rf /tmp/*
 rm -rf /var/tmp/*
 # Arm the per-device MQTT passwords (step 6b) for the image's first boot.
-rm -f /var/lib/boneio/mqtt-firstboot.done
+rm -f /var/lib/boneio/mqtt-firstboot.done /var/lib/boneio/board-setup.done
 
 # Clear mosquitto retained messages (boneio may have published during setup)
 systemctl stop mosquitto 2>/dev/null || true

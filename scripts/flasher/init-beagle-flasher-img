@@ -13,6 +13,11 @@
 #       from that; set it when flashing with no input board attached, because
 #       then there is nothing to probe.
 #
+#   DEVICE_TYPE=32x10 | 24x16 | cover | cover_mix
+#       Which controller this is. The station sets it, so the owner's first-run
+#       wizard does not ask. Both are applied by boneio-board-setup, which
+#       reads them as KEY=value lines rather than sourcing this file.
+#
 #   BONEIO_FLASHER_STATION=1
 #       Factory test station. Instead of halting when the flash is done, the
 #       board boots systemd from the SD CARD (not from the eMMC it just wrote)
@@ -548,244 +553,32 @@ fix_emmc_rootfs () {
 	fi
 
 	# =========================================================================
-	# Detect board version
-	# Priority:
-	#   1. /boot/firmware/boneio.txt (user override on SD boot partition)
-	#   2. I2C probe: DS2484 at 0x18 on I2C2 = board v1.0+
-	#
-	# The probe can only tell a 1.x board from a 0.x one — 1.0 and 1.1 are
-	# electrically identical apart from the buzzer, which is not on I2C. Boards
-	# coming off the line now are 1.1, so that is what an auto-detected board is
-	# stamped with; put BOARD_VERSION in boneio.txt to flash an older 1.0.
-	#
-	# boneio.txt format (FAT32 boot partition, editable from any PC):
-	#   BOARD_VERSION=1.1
+	# Fit the eMMC system to this board: configuration variant and revision,
+	# pin overlay, 1-Wire modules, an active-low relay board. The same script
+	# runs at first boot when a card is booted directly; here it runs on the
+	# eMMC just written, reading this card's boneio.txt (DEVICE_TYPE,
+	# BOARD_VERSION) and probing this board, and marks it done there, so the
+	# controller does not do it a second time.
 	# =========================================================================
 	oled_msg "Setup system" "[======-----] 62%" "Detecting board"
 
-	BOARD_VERSION=""
-	BOARD_HAS_DS2484=false
-	# Version stamped on a board identified by the I2C probe alone.
-	DETECTED_V1_VERSION="1.1"
-
-	# 1. Check for boneio.txt override on SD boot partition
-	#    When running as init (PID 1), /boot/firmware is NOT mounted yet.
-	#    Mount the SD card's FAT32 boot partition temporarily.
-	BONEIO_TXT=""
+	# When running as init (PID 1), /boot/firmware is NOT mounted yet.
 	BOOT_MOUNTED=false
 	if ! mountpoint -q /boot/firmware 2>/dev/null; then
 		mkdir -p /boot/firmware
 		if mount /dev/mmcblk0p1 /boot/firmware -o ro 2>/dev/null; then
 			BOOT_MOUNTED=true
-			message="INFO: Mounted SD boot partition at /boot/firmware" ; broadcast
 		fi
 	fi
-
-	for candidate in /boot/firmware/boneio.txt /boot/boneio.txt; do
-		if [ -f "$candidate" ]; then
-			BONEIO_TXT="$candidate"
-			break
-		fi
-	done
-
-	if [ -n "$BONEIO_TXT" ]; then
-		# Source the file to get BOARD_VERSION variable
-		. "$BONEIO_TXT"
-		if [ -n "$BOARD_VERSION" ]; then
-			message="INFO: Found boneio.txt -> BOARD_VERSION=${BOARD_VERSION}" ; broadcast
-			case "$BOARD_VERSION" in
-				1.0|1.0.*|1.1|1.1.*)
-					BOARD_HAS_DS2484=true
-					message="INFO: Board version ${BOARD_VERSION} -> using v1.0 overlay, config stamped ${BOARD_VERSION}" ; broadcast
-					;;
-				0.4|0.5|0.6|0.7|0.8|0.8.*)
-					BOARD_HAS_DS2484=false
-					message="INFO: Board version ${BOARD_VERSION} -> using default overlay" ; broadcast
-					;;
-				*)
-					message="WARNING: Unknown BOARD_VERSION=${BOARD_VERSION} in boneio.txt, falling back to I2C probe" ; broadcast
-					BOARD_VERSION=""
-					;;
-			esac
-		else
-			message="INFO: boneio.txt found but BOARD_VERSION not set, falling back to I2C probe" ; broadcast
-		fi
+	if [ -x /usr/local/sbin/boneio-board-setup ]; then
+		/usr/local/sbin/boneio-board-setup /tmp/rootfs /boot/firmware 2>&1 | while IFS= read -r line; do
+			message="INFO: ${line}" ; broadcast
+		done || true
+	else
+		message="WARNING: boneio-board-setup missing on this card, eMMC keeps the image's board setup" ; broadcast
 	fi
-
-	# Unmount boot partition if we mounted it
 	if $BOOT_MOUNTED; then
 		umount /boot/firmware 2>/dev/null || true
-	fi
-
-	# 2. Fall back to I2C auto-detection if no valid boneio.txt
-	if [ -z "$BOARD_VERSION" ]; then
-		message="INFO: Probing I2C2 for DS2484 (0x18)..." ; broadcast
-
-		# Ensure I2C bus is available
-		modprobe i2c-dev 2>/dev/null || true
-		sleep 1
-
-		# Diagnostic: list available I2C buses
-		I2C_BUSES=$(ls /dev/i2c-* 2>/dev/null || echo "none")
-		message="DIAG: Available I2C buses: ${I2C_BUSES}" ; broadcast
-
-		if command -v i2cdetect >/dev/null 2>&1; then
-			message="DIAG: i2cdetect found at $(command -v i2cdetect)" ; broadcast
-			# Dump full i2cdetect output for debugging
-			I2C_SCAN=$(i2cdetect -y -r 2 0x18 0x18 2>&1 || echo "FAILED")
-			message="DIAG: i2cdetect output: ${I2C_SCAN}" ; broadcast
-
-			# Probe address 0x18 on I2C bus 2 (quick mode, single address)
-			if echo "$I2C_SCAN" | grep -q "18"; then
-				BOARD_HAS_DS2484=true
-				BOARD_VERSION="$DETECTED_V1_VERSION"
-				message="INFO: DS2484 detected at 0x18 on I2C2 -> board v1.x, stamping ${BOARD_VERSION}" ; broadcast
-			else
-				message="INFO: No DS2484 at 0x18 -> board v0.4-v0.8 (GPIO 1-Wire)" ; broadcast
-			fi
-		elif [ -e /dev/i2c-2 ]; then
-			message="DIAG: No i2cdetect, trying raw Python probe on /dev/i2c-2" ; broadcast
-			# Fallback: raw I2C probe without i2cdetect
-			# Try reading from address 0x18 - if device is present, read succeeds
-			if python3 -c "
-import struct, fcntl, os
-I2C_SLAVE = 0x0703
-fd = os.open('/dev/i2c-2', os.O_RDWR)
-fcntl.ioctl(fd, I2C_SLAVE, 0x18)
-try:
-    os.read(fd, 1)
-    print('found')
-except:
-    print('none')
-finally:
-    os.close(fd)
-" 2>/dev/null | grep -q "found"; then
-				BOARD_HAS_DS2484=true
-				BOARD_VERSION="$DETECTED_V1_VERSION"
-				message="INFO: DS2484 detected (raw probe) -> board v1.x, stamping ${BOARD_VERSION}" ; broadcast
-			else
-				message="INFO: No DS2484 (raw probe) -> board v0.4-v0.8" ; broadcast
-			fi
-		else
-			message="WARNING: Cannot probe I2C2 (no i2cdetect, no /dev/i2c-2). Using default overlay." ; broadcast
-		fi
-	fi
-
-	# Select overlay based on board detection
-	UENV_FILE=""
-	if [ -f /tmp/rootfs/boot/firmware/uEnv.txt ]; then
-		UENV_FILE="/tmp/rootfs/boot/firmware/uEnv.txt"
-	elif [ -f /tmp/rootfs/boot/uEnv.txt ]; then
-		UENV_FILE="/tmp/rootfs/boot/uEnv.txt"
-	fi
-
-	if [ -n "$UENV_FILE" ] && [ "$BOARD_HAS_DS2484" = true ]; then
-		message="INFO: Switching overlay to BONEIO-BLACK-PINS-v1.0.dtbo" ; broadcast
-		oled_msg "Setup system" "[======-----] 64%" "Board v1.0 overlay"
-		# Replace any existing BONEIO-BLACK-PINS overlay reference
-		sed -i \
-			-e 's|uboot_overlay_addr0=.*BONEIO-BLACK-PINS[^ ]*|uboot_overlay_addr0=BONEIO-BLACK-PINS-v1.0.dtbo|' \
-			"$UENV_FILE"
-		message="INFO: Overlay set to BONEIO-BLACK-PINS-v1.0.dtbo" ; broadcast
-
-		# Install 1-Wire kernel modules config (ds2482 + w1-therm)
-		# This ensures modules are loaded at boot without waiting for boneio-migrate
-		ONEWIRE_CONF="/tmp/rootfs/etc/modules-load.d/onewire.conf"
-		if [ ! -f "$ONEWIRE_CONF" ]; then
-			mkdir -p /tmp/rootfs/etc/modules-load.d
-			printf 'ds2482\nw1-therm\n' > "$ONEWIRE_CONF"
-			message="INFO: Installed onewire.conf (ds2482 + w1-therm modules)" ; broadcast
-		else
-			message="INFO: onewire.conf already exists, skipping" ; broadcast
-		fi
-
-		# Stamp the detected board version into config.yaml. The shipped image
-		# carries 0.8; a re-flashed 1.0 board gets bumped to whatever this run
-		# detected, so the config always matches the board in hand.
-		TARGET_VERSION="${BOARD_VERSION:-$DETECTED_V1_VERSION}"
-		BONEIO_CONFIG="/tmp/rootfs/home/boneio/boneio/config.yaml"
-		if [ -f "$BONEIO_CONFIG" ]; then
-			# Only the version: inside the boneio: section. Other sections carry
-			# their own version keys (a modbus device, for one), and stamping
-			# those would quietly corrupt the config. The sed range runs from
-			# "boneio:" to the next top-level key; busybox sed has no \s, hence
-			# the POSIX classes.
-			BONEIO_SECTION='/^boneio:/,/^[^[:space:]#]/'
-			OLD_VER=$(sed -n "${BONEIO_SECTION} s/^[[:space:]]*version:[[:space:]]*\([0-9.]*\).*/\1/p" "$BONEIO_CONFIG" | head -n 1)
-			if [ -z "$OLD_VER" ]; then
-				message="WARNING: No board version in config.yaml boneio section, leaving it alone" ; broadcast
-			elif [ "$OLD_VER" = "$TARGET_VERSION" ]; then
-				message="INFO: config.yaml board version already ${TARGET_VERSION}" ; broadcast
-			else
-				sed -i "${BONEIO_SECTION} s/^\([[:space:]]*version:[[:space:]]*\)[0-9.]*/\1${TARGET_VERSION}/" "$BONEIO_CONFIG"
-				message="INFO: Updated config.yaml board version ${OLD_VER} -> ${TARGET_VERSION}" ; broadcast
-			fi
-			# Remove deprecated ds2482 section (kernel handles 1-Wire now)
-			if grep -q '^ds2482:' "$BONEIO_CONFIG"; then
-				sed -i '/^ds2482:/,/^[^ ]/{ /^ds2482:/d; /^  /d; }' "$BONEIO_CONFIG"
-				message="INFO: Removed deprecated ds2482 section from config.yaml" ; broadcast
-			fi
-			# Replace ina219 with ina226 (v1.0 uses INA226 power monitor)
-			if grep -q '^ina219:' "$BONEIO_CONFIG"; then
-				sed -i 's/^ina219:/ina226:/' "$BONEIO_CONFIG"
-				message="INFO: Updated config.yaml ina219 -> ina226 for v1.0 board" ; broadcast
-			fi
-		fi
-
-		# Detect relay board active-LOW (inverted) logic
-		# MCP23017 at address 0x23 (35), register 0x12 (GPIOA)
-		# Reading GPIOA while pins are in INPUT mode (power-on reset default):
-		# If GPIOA reads 0xFF, the relay board has pull-ups -> active-LOW logic (inverted = true)
-		RELAY_INVERTED=false
-		if command -v i2cget >/dev/null 2>&1; then
-			GPIO_A=$(i2cget -y 2 0x23 0x12 2>/dev/null || echo "0x00")
-			if [ "$GPIO_A" = "0xff" ]; then
-				RELAY_INVERTED=true
-				message="INFO: Relay board detected as active-LOW (inverted)" ; broadcast
-			fi
-		elif python3 -c "
-import fcntl, os
-I2C_SLAVE = 0x0703
-try:
-    fd = os.open('/dev/i2c-2', os.O_RDWR)
-    fcntl.ioctl(fd, I2C_SLAVE, 0x23)
-    os.write(fd, b'\x12')
-    data = os.read(fd, 1)
-    if data == b'\xff':
-        print('inverted')
-    os.close(fd)
-except:
-    pass
-" 2>/dev/null | grep -q "inverted"; then
-			RELAY_INVERTED=true
-			message="INFO: Relay board detected as active-LOW (inverted, raw probe)" ; broadcast
-		fi
-
-		if [ "$RELAY_INVERTED" = true ]; then
-			STATE_FILE="/tmp/rootfs/home/boneio/boneiostate.json"
-			mkdir -p /tmp/rootfs/home/boneio
-			python3 -c "
-import json, os
-state_file = '$STATE_FILE'
-state = {}
-if os.path.exists(state_file):
-    try:
-        with open(state_file) as f:
-            state = json.load(f)
-    except:
-        state = {}
-state.setdefault('hardware', {})
-state['hardware']['mcp_0x23_inverted'] = True
-state['hardware']['mcp_0x24_inverted'] = True
-state['hardware']['mcp_0x25_inverted'] = True
-with open(state_file, 'w') as f:
-    json.dump(state, f, indent=2)
-"
-			chown 1000:1000 "$STATE_FILE" 2>/dev/null || true
-			message="INFO: Pre-seeded boneiostate.json with inverted relay board flag" ; broadcast
-		fi
-	elif [ -n "$UENV_FILE" ]; then
-		message="INFO: Keeping default overlay (BONEIO-BLACK-PINS.dtbo)" ; broadcast
 	fi
 
 	# Update generic-sys-mods if present

@@ -230,8 +230,8 @@ install_flasher_script() {
     fi
 }
 
-# Function to apply device-specific BoneIO config from example_config inside image
-# Finds the config directory in /home/boneio/.cache/boneio_configs, repo configs/, or venv
+# Function to apply device-specific BoneIO config inside image
+# Finds the config directory in ../app_black's factory_config, /home/boneio/.cache/boneio_configs, or venv
 # and copies the correct variant's YAML files and cache to /home/boneio/boneio/
 # Read __version__ out of a boneio/version.py, empty if it cannot be read.
 read_boneio_version() {
@@ -341,17 +341,17 @@ apply_device_config() {
         return 1
     fi
     
-    # 1. Check repo configs/ directory (latest YAMLs, plus a .cache.pkl if the
-    #    refresh above rebuilt one — the caches are generated, not committed)
+    # 1. Check ../app_black's factory_config (latest YAMLs, plus a .cache.pkl if
+    #    the refresh above rebuilt one — the caches are generated, not committed)
     local example_dir=""
-    if [ -d "$SCRIPT_DIR/../configs/$BOARD_CONFIG_VERSION/$device_name" ]; then
-        example_dir="$SCRIPT_DIR/../configs/$BOARD_CONFIG_VERSION/$device_name"
+    if [ -n "$APP_BLACK_DIR" ] && [ -d "$APP_BLACK_DIR/boneio/factory_config/$BOARD_CONFIG_VERSION/$device_name" ]; then
+        example_dir="$APP_BLACK_DIR/boneio/factory_config/$BOARD_CONFIG_VERSION/$device_name"
     # 2. Check /home/boneio/.cache/boneio_configs inside the mounted image
     elif [ -d "$MOUNT_POINT/home/boneio/.cache/boneio_configs/$BOARD_CONFIG_VERSION/$device_name" ]; then
         example_dir="$MOUNT_POINT/home/boneio/.cache/boneio_configs/$BOARD_CONFIG_VERSION/$device_name"
-    # 3. Fallback to venv example_config
+    # 3. Fallback to the installed package's factory_config
     else
-        for site_pkg in "$MOUNT_POINT"/home/boneio/boneio/venv/lib/python*/site-packages/boneio/example_config; do
+        for site_pkg in "$MOUNT_POINT"/home/boneio/boneio/venv/lib/python*/site-packages/boneio/factory_config/$BOARD_CONFIG_VERSION; do
             if [ -d "$site_pkg/$device_name" ]; then
                 example_dir="$site_pkg/$device_name"
                 break
@@ -741,7 +741,7 @@ refresh_config_caches() {
 
     print_info "Warming config caches for board $BOARD_CONFIG_VERSION: ${variants[*]}"
 
-    # Run as the invoking user, not root: the caches land inside this repo and a
+    # Run as the invoking user, not root: the caches land inside ../app_black and a
     # root-owned .pkl would be the next surprise for whoever builds without sudo.
     local runner=(env)
     if [ -n "$SUDO_USER" ]; then
@@ -753,7 +753,7 @@ import os, sys
 sys.path.insert(0, os.getcwd())
 import boneio.core.config.yaml_util as y
 
-base_dir = '$SCRIPT_DIR/../configs/$BOARD_CONFIG_VERSION'
+base_dir = '$APP_BLACK_DIR/boneio/factory_config/$BOARD_CONFIG_VERSION'
 failed = []
 for variant in sys.argv[1:]:
     cfg = os.path.join(base_dir, variant, 'config.yaml')

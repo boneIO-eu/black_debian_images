@@ -226,12 +226,12 @@ if [ -d "/tmp/flasher_rootfs/home/boneio/.cache/boneio_configs/$BOARD_CONFIG_VER
     cp /tmp/flasher_rootfs/home/boneio/.cache/boneio_configs/$BOARD_CONFIG_VERSION/tester/*.cache.pkl /tmp/flasher_rootfs/home/boneio/boneio/ 2>/dev/null || true
     chown -R 1000:1000 /tmp/flasher_rootfs/home/boneio/boneio/* 2>/dev/null || true
     echo "Applied tester config to SD card rootfs"
-elif [ -d "$SCRIPT_DIR/../configs/$BOARD_CONFIG_VERSION/tester" ]; then
+elif [ -d "$SCRIPT_DIR/../../app_black/boneio/factory_config/$BOARD_CONFIG_VERSION/tester" ]; then
     rm -f /tmp/flasher_rootfs/home/boneio/boneio/*.yaml /tmp/flasher_rootfs/home/boneio/boneio/*.cache.pkl
-    cp "$SCRIPT_DIR/../configs/$BOARD_CONFIG_VERSION/tester"/*.yaml /tmp/flasher_rootfs/home/boneio/boneio/
-    cp "$SCRIPT_DIR/../configs/$BOARD_CONFIG_VERSION/tester"/*.cache.pkl /tmp/flasher_rootfs/home/boneio/boneio/ 2>/dev/null || true
+    cp "$SCRIPT_DIR/../../app_black/boneio/factory_config/$BOARD_CONFIG_VERSION/tester"/*.yaml /tmp/flasher_rootfs/home/boneio/boneio/
+    cp "$SCRIPT_DIR/../../app_black/boneio/factory_config/$BOARD_CONFIG_VERSION/tester"/*.cache.pkl /tmp/flasher_rootfs/home/boneio/boneio/ 2>/dev/null || true
     chown -R 1000:1000 /tmp/flasher_rootfs/home/boneio/boneio/* 2>/dev/null || true
-    echo "Applied tester config to SD card rootfs from repo configs"
+    echo "Applied tester config to SD card rootfs from ../app_black factory_config"
 fi
 
 # Pre-generate SSH host keys on the PC for the flasher SD card (takes 0.01s on PC)

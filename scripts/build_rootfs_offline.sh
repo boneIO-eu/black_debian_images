@@ -196,7 +196,7 @@ fi
 
 BUILD="$MNT/root/boneio-build"
 mkdir -p "$BUILD/bin"
-rsync -a --exclude '*.pkl' "$REPO_DIR/scripts" "$REPO_DIR/configs" "$BUILD/"
+rsync -a "$REPO_DIR/scripts" "$BUILD/"
 if [ -n "$BONEIO_WHEEL_SRC" ]; then
     mkdir -p "$BUILD/wheels"
     cp "$BONEIO_WHEEL_SRC" "$BUILD/wheels/"

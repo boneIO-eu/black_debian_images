@@ -880,38 +880,24 @@ CONFIGS_DIR="${BONEIO_HOME}/.cache/boneio_configs"
 rm -rf "$CONFIGS_DIR"
 mkdir -p "$CONFIGS_DIR"
 
-# The revision a build-time default config is taken from (above), not a limit
-# on what gets installed.
-BOARD_CONFIG_VERSION="${BOARD_CONFIG_VERSION:-1.1}"
-BOARD_REVISIONS="0.8 1.0 1.1"
-BOARD_VARIANTS="base 32x10 24x16 cover cover_mix tester"
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")"
-if [ -n "$SCRIPT_DIR" ] && [ -d "$SCRIPT_DIR/../configs/$BOARD_CONFIG_VERSION" ]; then
-    for revision in $BOARD_REVISIONS; do
-        [ -d "$SCRIPT_DIR/../configs/$revision" ] || continue
-        mkdir -p "$CONFIGS_DIR/$revision"
-        cp -r "$SCRIPT_DIR/../configs/$revision"/* "$CONFIGS_DIR/$revision/"
-    done
-else
-    # Fallback when running piped via curl: download configs from GitHub
-    for revision in $BOARD_REVISIONS; do
-        for variant in $BOARD_VARIANTS; do
-            mkdir -p "$CONFIGS_DIR/$revision/$variant"
-            for f in config.yaml event.yaml binary_sensor.yaml mqtt.yaml secrets.yaml adc.yaml output32x10A.yaml output24x16A.yaml outputCover.yaml outputCoverMix.yaml cover.yaml; do
-                curl -fsSL "https://raw.githubusercontent.com/boneIO-eu/black_debian_images/main/configs/$revision/$variant/$f" -o "$CONFIGS_DIR/$revision/$variant/$f" 2>/dev/null || true
-            done
-        done
-    done
+# The templates ship with boneIO, so the image installs the ones of the
+# version it installs — the same files a factory reset copies back later.
+FACTORY_CONFIG="$(cd /tmp && ${BONEIO_HOME}/boneio/venv/bin/python3 -c \
+    'import boneio.factory_config as f; print(f.FACTORY_CONFIG_DIR)' 2>/dev/null || true)"
+if [ -z "$FACTORY_CONFIG" ] || [ ! -d "$FACTORY_CONFIG" ]; then
+    log_error "   boneio ${BONEIO_INSTALLED} has no boneio/factory_config; build on a"
+    log_error "   boneIO that ships its board templates."
+    exit 1
 fi
-# The repo's caches were built against whatever boneIO the build machine had;
-# the ones that count are made below, against the installed package.
-find "$CONFIGS_DIR" -name '*.cache.pkl' -delete 2>/dev/null || true
-# A variant a revision does not have (0.8 has no tester) is an empty directory.
-find "$CONFIGS_DIR" -mindepth 2 -maxdepth 2 -type d -empty -delete 2>/dev/null || true
-# A 404 leaves curl's -o file behind as an empty stub; drop those so a missing
-# variant looks missing instead of looking like an empty config.
-find "$CONFIGS_DIR" -type f -name '*.yaml' -size 0 -delete 2>/dev/null || true
+for revision_dir in "$FACTORY_CONFIG"/*/; do
+    revision="$(basename "$revision_dir")"
+    for variant_dir in "$revision_dir"*/; do
+        variant="$(basename "$variant_dir")"
+        [ -f "$variant_dir/config.yaml" ] || continue
+        mkdir -p "$CONFIGS_DIR/$revision/$variant"
+        cp "$variant_dir"/*.yaml "$CONFIGS_DIR/$revision/$variant/"
+    done
+done
 
 # Pre-generate schema cache and config caches for all 5 variants
 log_info "   Pre-generating schema cache and config caches..."

@@ -30,7 +30,8 @@ Skrypt instaluje wszystkie powyższe (apt) i wypisuje raport co się udało.
 Wymaga systemu opartego o `apt` (Ubuntu/Debian). Jeśli chcesz korzystać
 z `generate_all_images.sh`, sklonuj `app_black` obok tego repo (`../app_black`).
 
-Cache configów (`configs/<wersja>/*/config.yaml.cache.pkl`) jest generowany, nie trzymany
+Cache configów (`config.yaml.cache.pkl` obok szablonów w
+`../app_black/boneio/factory_config/`) jest generowany, nie trzymany
 w repo. `generate_all_images.sh` przelicza go na świeżo przy każdym budowaniu
 i **przerywa build**, jeśli się nie uda albo jeśli `schema.yaml` w `app_black`
 różni się od tego, który instaluje obraz — w obu przypadkach sterownik odrzuciłby
@@ -39,22 +40,17 @@ godzisz się na wolny pierwszy start, dodaj `--allow-cold-cache`.
 
 ### Configi per wersja płyty
 
-`configs/` trzyma jeden katalog na rewizję sprzętu, tak jak `boneio/boards/`
-w `app_black`:
+Szablony configów nie mieszkają w tym repo. Są w `app_black`, w
+`boneio/factory_config/<rewizja>/<wariant>/`, i jadą z paczką boneIO —
+z tych samych plików korzysta reset fabryczny w aplikacji, więc obraz i reset
+nie mogą się rozjechać, a zmiana formatu configu dociera z aktualizacją apki.
 
-```
-configs/
-  1.0/{24x16,32x10,cover,cover_mix,tester}/
-  1.1/{24x16,32x10,cover,cover_mix,tester}/
-```
-
-1.0 i 1.1 są na razie identyczne poza `boneio.version` — 1.1 różni się buzzerem,
-który nie wymaga zmian w configu. Na urządzeniu układ pozostaje płaski
-(`~/.cache/boneio_configs/<wariant>/`), więc instalator kopiuje tam tylko
-wybraną rewizję.
+`setup_boneio.sh` kopiuje wszystkie rewizje z zainstalowanej paczki do
+`~/.cache/boneio_configs/<rewizja>/<wariant>/`; `boneio-board-setup` wybiera
+z nich jeden przy pierwszym starcie.
 
 Domyślną rewizję wybiera `BOARD_CONFIG_VERSION` (domyślnie **1.1**), ustawiana
-w czterech miejscach — przy podbiciu wersji trzeba ruszyć wszystkie:
+w kilku miejscach — przy podbiciu wersji trzeba ruszyć wszystkie:
 
 | Plik | Zmienna |
 | --- | --- |

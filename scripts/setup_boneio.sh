@@ -936,31 +936,60 @@ chown -R ${BONEIO_USER}:${BONEIO_USER} ${BONEIO_HOME} 2>/dev/null || true
 
 log_info "   BoneIO application installed"
 
+# Caddy is the system's own service from the first boot, not a container.
+#
+# The migrations above staged everything it needs (migration 1.6.42): Caddy's
+# apt repository with its key and pin, the generator, and a drop-in that keeps
+# the package from starting until /etc/boneio/proxy-native exists. So the order
+# is: update the lists (all of them, the Caddy one is new), install the
+# package, then put the marker, then the compose file without a caddy service.
+# This is the end state boneio-containers' proxy-switch steps leave on a
+# controller that was already in the field, reached without the switch.
+CADDY_LIST="/etc/apt/sources.list.d/caddy-stable.list"
+CADDY_KEYRING="/usr/share/keyrings/caddy-stable-archive-keyring.gpg"
+PROXY_NATIVE_MARKER="/etc/boneio/proxy-native"
+COMPOSE_NATIVE="/usr/lib/boneio/trusted/docker-compose-native-proxy.yaml"
+for f in "$CADDY_LIST" "$CADDY_KEYRING" "$COMPOSE_NATIVE" \
+         /etc/systemd/system/caddy.service.d/boneio.conf \
+         /usr/lib/boneio/proxy-config /usr/lib/boneio/trusted/boneio-proxy-config; do
+    if [ ! -e "$f" ]; then
+        log_error "❌ ${f} is missing — migration 1.6.42 did not run; there is no native Caddy to install."
+        exit 1
+    fi
+done
+log_info "   Installing Caddy as a system service..."
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+apt-get update
+# The drop-in's condition keeps the postinst from starting a stock Caddy on :80.
+apt-get install -y --no-install-recommends caddy
+touch "$PROXY_NATIVE_MARKER"
+chmod 0644 "$PROXY_NATIVE_MARKER"
+systemctl enable caddy
+# Started by the first boot, with the compose file below and no container to
+# compete for 8091/8443.
+if ! systemctl is-enabled caddy >/dev/null 2>&1; then
+    log_error "❌ caddy.service is not enabled; not sealing an image without a proxy."
+    exit 1
+fi
+
 # The compose file has to be root-owned: boneio-containers refuses every verb
 # that runs compose otherwise, since whoever can write the file can start a
 # container as root with the host mounted. The migrations installed and rooted
 # it, but the chown -R above just handed it back to boneio — so put it back
 # from the trusted template, after that chown and not before it.
 #
-# This used to copy boneio/core/cloud/data/docker-compose.yaml and chown it to
-# boneio. That copy had fallen behind the template (no WEB_PORT, so Caddy
-# proxied to 8090 whatever web.port said) and the chown left the panel unable
-# to restart its own containers.
+# The native template: Node-RED alone, published on 127.0.0.1:1880. Caddy is
+# the package installed above.
 COMPOSE_LIVE="${BONEIO_HOME}/docker/nodered/docker-compose.yaml"
-COMPOSE_TRUSTED="/usr/lib/boneio/trusted/docker-compose.yaml"
-if [ -f "$COMPOSE_TRUSTED" ]; then
-    log_info "   Installing docker-compose.yaml from ${COMPOSE_TRUSTED}..."
-    install -o root -g root -m 0644 "$COMPOSE_TRUSTED" "$COMPOSE_LIVE"
-else
-    # No trusted template means the migrations did not run, and the device is
-    # missing its hardening anyway. Still give it the current template rather
-    # than an old one.
-    log_warn "   ${COMPOSE_TRUSTED} missing — did the migrations run? Using the package template"
-    COMPOSE_ASSET=$(echo ${BONEIO_HOME}/boneio/venv/lib/python*/site-packages/boneio/migrations/assets/docker/nodered/docker-compose.yaml)
-    install -o root -g root -m 0644 "$COMPOSE_ASSET" "$COMPOSE_LIVE"
+log_info "   Installing docker-compose.yaml from ${COMPOSE_NATIVE}..."
+install -o root -g root -m 0644 "$COMPOSE_NATIVE" "$COMPOSE_LIVE"
+if grep -qE '^[[:space:]]*caddy:' "$COMPOSE_LIVE"; then
+    log_error "❌ The live compose file still has a caddy service."
+    exit 1
 fi
 
-# Pull Docker images so Node-RED + Caddy work out of the box.
+# Pull the Node-RED image so it works out of the box.
 #
 # Not when the image is built on a PC (build_rootfs_offline.sh sets
 # BONEIO_OFFLINE_BUILD=1): there is no dockerd there, so this block could only
@@ -973,14 +1002,13 @@ fi
 if [ "${BONEIO_OFFLINE_BUILD:-}" = 1 ]; then
     log_info "   Offline build: Docker store kept as inherited (no dockerd here)"
 else
-    # Pull Docker images so Node-RED + Caddy work out of the box
     log_info "   Starting Docker daemon..."
     # Clean stale bridge state (prevents 'networks have same bridge name' error)
     systemctl stop docker 2>/dev/null || true
     ip link delete docker0 2>/dev/null || true
     rm -rf /var/lib/docker/network 2>/dev/null || true
     systemctl start docker 2>/dev/null || true
-    log_info "   Pulling Docker images (Node-RED + Caddy)..."
+    log_info "   Pulling the Node-RED image..."
     export HOSTNAME=$(hostname)
     cd ${BONEIO_HOME}/docker/nodered
     # Remove stale containers/networks from previous image runs
@@ -989,9 +1017,14 @@ else
     docker compose pull 2>&1 || log_warn "   Docker image pull failed (will retry on first boot)"
     docker compose up -d 2>&1 || log_warn "   Docker compose up failed"
     log_info "   Docker containers started"
-    # Images no container uses any more — the Caddy an image had before a release
-    # moved the pin, for one. Tens of MB each on a small eMMC.
+    # Images no container uses any more — the Caddy image an inherited store
+    # still has, now that the compose file has no caddy service, for one. Tens of MB each on a small eMMC.
     docker image prune -af 2>&1 | tail -1 || true
+    # Not pruned if a container still holds it (stopped ones are removed by
+    # --remove-orphans above); say so rather than ship a Caddy image.
+    if docker image ls --format '{{.Repository}}' | grep -qx caddy; then
+        docker image rm -f $(docker image ls -q caddy) 2>&1 | tail -1 || true
+    fi
 fi
 # NOTE: Don't 'docker compose stop' before poweroff — restart:unless-stopped
 # needs containers to have been running to auto-start on next boot.
@@ -1269,12 +1302,22 @@ rm -f /etc/ssh/ssh_host_* /etc/bbb.io/ssh_regenerate
 # new one, bound to the machine-id, on first start.
 rm -f "${BONEIO_HOME}/boneio/jwt_secret" "${BONEIO_HOME}/boneio/.jwt_secret.tmp"
 # Caddy's internal CA, its leaves and the hostname marker that decides whether
-# init-certs wipes them. With the marker gone the first start clears the PKI
-# and mints a CA of the device's own.
+# the generator keeps them. With the marker gone the first start mints a
+# CA of the device's own. The packaged Caddy keeps its data under
+# /var/lib/caddy; the container's directories are wiped too (an inherited
+# image may still have them), and so is what the proxy leaves under
+# /var/lib/boneio/proxy and /run/boneio-proxy.
+PKG_CADDY_DATA="/var/lib/caddy/.local/share/caddy"
 CADDY_DATA="${BONEIO_HOME}/docker/nodered/caddy/data"
+rm -rf "${PKG_CADDY_DATA}/pki" "${PKG_CADDY_DATA}/certificates"
 rm -rf "${CADDY_DATA}/caddy/pki" "${CADDY_DATA}/caddy/certificates/local"
 rm -f "${CADDY_DATA}/last_hostname"
-if [ -e "${BONEIO_HOME}/boneio/jwt_secret" ] || [ -e "${CADDY_DATA}/caddy/pki" ]; then
+rm -f /var/lib/boneio/proxy/last_hostname /var/lib/boneio/proxy/root.crt \
+      /var/lib/boneio/proxy/switch.json /var/lib/boneio/proxy/switch.log \
+      /var/lib/boneio/proxy/compose.before
+rm -rf /run/boneio-proxy
+if [ -e "${BONEIO_HOME}/boneio/jwt_secret" ] || [ -e "${PKG_CADDY_DATA}/pki" ] \
+   || [ -e "${CADDY_DATA}/caddy/pki" ]; then
     log_error "❌ A per-device secret is still in the image; not sealing it."
     exit 1
 fi

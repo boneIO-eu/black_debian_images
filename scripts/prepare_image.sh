@@ -120,6 +120,15 @@ if [ -d "$CADDY_CONFIG_DIR" ]; then
     echo "   Cleared Caddy config directory"
 fi
 
+# The packaged Caddy's authority, certificates and the proxy's per-device files.
+# A fresh device mints its own on the first start.
+rm -rf /var/lib/caddy/.local/share/caddy/pki /var/lib/caddy/.local/share/caddy/certificates
+rm -f /var/lib/boneio/proxy/last_hostname /var/lib/boneio/proxy/root.crt \
+      /var/lib/boneio/proxy/switch.json /var/lib/boneio/proxy/switch.log \
+      /var/lib/boneio/proxy/compose.before
+rm -rf /run/boneio-proxy
+echo "   Cleared the packaged Caddy's authority and proxy state"
+
 # --- 4. FINALIZATION ---
 echo "4/5: Shutting down system..."
 echo "--------------------------------------------------------"

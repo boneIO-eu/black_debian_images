@@ -983,7 +983,7 @@ dev servers. Correct on a development board, never on a shipped one."
 # unix socket; a TCP listener on 2019 would be the unauthenticated default.
 check_native_proxy() {
     local title="Caddy is a system service"
-    local bad=() compose listing
+    local bad=() unknown=() compose listing
     compose=$(eval echo "~${BONEIO_USER}")/docker/nodered/docker-compose.yaml
     [[ "$(systemctl is-enabled caddy.service 2>/dev/null)" == enabled ]] || bad+=("caddy.service is not enabled")
     [[ -e /etc/boneio/proxy-native ]] || bad+=("/etc/boneio/proxy-native is missing")
@@ -995,17 +995,28 @@ check_native_proxy() {
     else
         bad+=("cannot read ${compose}")
     fi
-    listing="$(ss -tlnH 2>/dev/null)"
-    grep -qE ':2019[[:space:]]' <<<"$listing" && bad+=("something listens on TCP 2019")
-    local g
-    for g in /usr/lib/boneio/trusted/boneio-proxy-config /usr/lib/boneio/proxy-config; do
-        [[ -f "$g" ]] || bad+=("${g} is missing")
-    done
-    if [[ -f /usr/lib/boneio/trusted/boneio-proxy-config && -f /usr/lib/boneio/proxy-config ]] \
-       && ! cmp -s /usr/lib/boneio/trusted/boneio-proxy-config /usr/lib/boneio/proxy-config; then
-        bad+=("the proxy generator differs from its trusted copy")
+    listing="$(ss -tlnH 2>/dev/null || netstat -tln 2>/dev/null)"
+    if [[ -z "$listing" ]]; then
+        unknown+=("neither ss nor netstat gave a listing, so TCP 2019 was not checked")
+    elif grep -qE ':2019[[:space:]]' <<<"$listing"; then
+        bad+=("something listens on TCP 2019")
     fi
-    if [[ ${#bad[@]} -eq 0 ]]; then
+    # The trusted directory is not readable by everyone.
+    if [[ $IS_ROOT -eq 0 ]]; then
+        unknown+=("the proxy generator was not checked, it needs root")
+    else
+        local g
+        for g in /usr/lib/boneio/trusted/boneio-proxy-config /usr/lib/boneio/proxy-config; do
+            [[ -f "$g" ]] || bad+=("${g} is missing")
+        done
+        if [[ -f /usr/lib/boneio/trusted/boneio-proxy-config && -f /usr/lib/boneio/proxy-config ]] \
+           && ! cmp -s /usr/lib/boneio/trusted/boneio-proxy-config /usr/lib/boneio/proxy-config; then
+            bad+=("the proxy generator differs from its trusted copy")
+        fi
+    fi
+    if [[ ${#bad[@]} -eq 0 && ${#unknown[@]} -gt 0 ]]; then
+        record UNKNOWN "F-10" "$title" "$(IFS=';'; echo "${unknown[*]}"). Re-run as: ${RERUN_HINT}"
+    elif [[ ${#bad[@]} -eq 0 ]]; then
         record PASS "F-10" "$title" \
             "caddy.service is enabled, the native marker is set, the compose file has no caddy service, \
 Node-RED is on 127.0.0.1:1880 only, nothing listens on TCP 2019, and the generator matches its trusted copy."

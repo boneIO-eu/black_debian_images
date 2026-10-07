@@ -975,6 +975,45 @@ dev servers. Correct on a development board, never on a shipped one."
     fi
 }
 
+# ------------------------------------------------ native Caddy (system service)
+
+# Caddy runs as the package's service, not as a container: it is enabled, the
+# marker that lets its drop-in start it exists, the live compose file has only
+# Node-RED, and that is published on loopback alone. Its admin API lives on a
+# unix socket; a TCP listener on 2019 would be the unauthenticated default.
+check_native_proxy() {
+    local title="Caddy is a system service"
+    local bad=() compose listing
+    compose=$(eval echo "~${BONEIO_USER}")/docker/nodered/docker-compose.yaml
+    [[ "$(systemctl is-enabled caddy.service 2>/dev/null)" == enabled ]] || bad+=("caddy.service is not enabled")
+    [[ -e /etc/boneio/proxy-native ]] || bad+=("/etc/boneio/proxy-native is missing")
+    if [[ -r "$compose" ]]; then
+        grep -qE '^[[:space:]]*caddy:' "$compose" && bad+=("the compose file still has a caddy service")
+        grep -qE '^[[:space:]]*-[[:space:]]*"?(0\.0\.0\.0:)?(1880:1880|:1880)' "$compose" \
+            && bad+=("node-red publishes 1880 on every interface")
+        grep -qE '127\.0\.0\.1:1880:1880' "$compose" || bad+=("node-red is not published on 127.0.0.1:1880")
+    else
+        bad+=("cannot read ${compose}")
+    fi
+    listing="$(ss -tlnH 2>/dev/null)"
+    grep -qE ':2019[[:space:]]' <<<"$listing" && bad+=("something listens on TCP 2019")
+    local g
+    for g in /usr/lib/boneio/trusted/boneio-proxy-config /usr/lib/boneio/proxy-config; do
+        [[ -f "$g" ]] || bad+=("${g} is missing")
+    done
+    if [[ -f /usr/lib/boneio/trusted/boneio-proxy-config && -f /usr/lib/boneio/proxy-config ]] \
+       && ! cmp -s /usr/lib/boneio/trusted/boneio-proxy-config /usr/lib/boneio/proxy-config; then
+        bad+=("the proxy generator differs from its trusted copy")
+    fi
+    if [[ ${#bad[@]} -eq 0 ]]; then
+        record PASS "F-10" "$title" \
+            "caddy.service is enabled, the native marker is set, the compose file has no caddy service, \
+Node-RED is on 127.0.0.1:1880 only, nothing listens on TCP 2019, and the generator matches its trusted copy."
+    else
+        record FAIL "F-10" "$title" "$(IFS=';'; echo "${bad[*]}")."
+    fi
+}
+
 # --------------------------------------------------------------------- main
 
 check_ssh_password_state
@@ -1002,6 +1041,7 @@ check_api_requires_auth
 check_api_docs
 check_serial_disclosure
 check_dev_mode
+check_native_proxy
 
 if [[ $JSON -eq 1 ]]; then
     printf '{\n  "host": "%s",\n' "$(json_escape "$(hostname)")"

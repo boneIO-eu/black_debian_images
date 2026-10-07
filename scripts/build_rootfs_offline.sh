@@ -103,7 +103,7 @@ if [ -n "$BONEIO_WHEEL_SRC" ]; then
     BONEIO_VERSION="$WHEEL_VERSION"
 fi
 
-for tool in systemd-nspawn losetup sfdisk e2fsck resize2fs dumpe2fs blkid rsync; do
+for tool in systemd-nspawn losetup sfdisk e2fsck resize2fs dumpe2fs blkid rsync unzip; do
     command -v "$tool" >/dev/null || die "missing tool: $tool"
 done
 
@@ -421,8 +421,11 @@ nsp apt-get clean
 CADDY_LIST_REL="etc/apt/sources.list.d/caddy-stable.list"
 CADDY_KEY_REL="usr/share/keyrings/caddy-stable-archive-keyring.gpg"
 CADDY_PIN_REL="etc/apt/preferences.d/caddy"
-if [ -n "$BONEIO_WHEEL_SRC" ]; then
-    A=boneio/migrations/assets/apt
+A=boneio/migrations/assets/apt
+# A wheel older than 1.6.42 has no such assets: leave the rootfs alone then,
+# and fall through to the warning below.
+if [ -n "$BONEIO_WHEEL_SRC" ] \
+   && unzip -l "$BONEIO_WHEEL_SRC" "$A/caddy-stable.list" "$A/caddy-stable-archive-keyring.gpg" "$A/caddy-pin.pref" >/dev/null 2>&1; then
     unzip -p "$BONEIO_WHEEL_SRC" "$A/caddy-stable.list"                > "$MNT/$CADDY_LIST_REL"
     unzip -p "$BONEIO_WHEEL_SRC" "$A/caddy-stable-archive-keyring.gpg" > "$MNT/$CADDY_KEY_REL"
     unzip -p "$BONEIO_WHEEL_SRC" "$A/caddy-pin.pref"                   > "$MNT/$CADDY_PIN_REL"
@@ -434,6 +437,15 @@ if [ -s "$MNT/$CADDY_LIST_REL" ] && [ -s "$MNT/$CADDY_KEY_REL" ]; then
         -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0 \
         || die "cannot read Caddy's repository"
     prefetch_debs install --no-install-recommends caddy
+    # Installed here, not left to setup_boneio.sh: its steps 0 and 3 run
+    # apt-get clean, which empties the archive before step 9 installs Caddy, so
+    # the prefetched file would be thrown away and downloaded again under qemu
+    # on every build. Setup's own install is then a no-op. Safe: there is no
+    # systemd under --as-pid2 and SYSTEMD_OFFLINE=1 makes the postinst's start
+    # a no-op, so the package never runs; the drop-in that gates it on the
+    # marker is staged later by migration 1.6.42, and setup still refuses to
+    # continue without it.
+    nsp apt-get install -y --no-install-recommends caddy
     cp -n "$MNT"/var/cache/apt/archives/*.deb "$BUILD_CACHE/apt/" 2>/dev/null || true
 else
     warn "No Caddy repository files (build from PyPI on an image older than 1.6.42?) — apt downloads the package itself, slowly"
@@ -620,8 +632,9 @@ NETWORK_DB_MISSING=""
 # 'up --remove-orphans' deletes it and its prune deletes the image.
 CADDY_LEFT=""
 grep -qF '"caddy:' "$REPOS_JSON" 2>/dev/null && CADDY_LEFT=1
+grep -rqsF '"com.docker.compose.service":"caddy"' "$MNT/var/lib/docker/containers" --include=config.v2.json && CADDY_LEFT=1
 if [ ${#MISSING_IMAGES[@]} -gt 0 ] || [ -n "$DOCKER_STORE" ] || [ -n "$NETWORK_DB_MISSING" ] || [ -n "$CADDY_LEFT" ]; then
-    [ -n "$CADDY_LEFT" ] && warn "The inherited Docker store still has a Caddy image; the first boot removes it"
+    [ -n "$CADDY_LEFT" ] && warn "The inherited Docker store still has a Caddy container or image; the first boot removes it"
     [ ${#MISSING_IMAGES[@]} -gt 0 ] && warn "Not in the Docker store: ${MISSING_IMAGES[*]}"
     [ -n "$NETWORK_DB_MISSING" ] && warn "Docker's network database is missing; containers get recreated"
     warn "Installing boneio-containers-firstboot.service: containers come up at first boot"
@@ -648,6 +661,8 @@ ConditionPathExists=/var/lib/boneio/containers-pending
 Type=simple
 WorkingDirectory=/home/boneio/docker/nodered
 ExecStart=/bin/sh -c 'export HOSTNAME="$$(hostname)"; \
+    docker ps -aq --filter label=com.docker.compose.service=caddy | xargs -r docker rm -f; \
+    systemctl start caddy.service || true; \
     until /usr/bin/docker compose -f docker-compose.yaml up -d --force-recreate --remove-orphans; do \
         echo "compose up failed; retrying in 2 min"; sleep 120; done; \
     /usr/bin/docker image prune -af || true; \

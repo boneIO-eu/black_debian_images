@@ -1023,6 +1023,7 @@ else
     # Not pruned if a container still holds it (stopped ones are removed by
     # --remove-orphans above); say so rather than ship a Caddy image.
     if docker image ls --format '{{.Repository}}' | grep -qx caddy; then
+        log_info "   Removing the leftover Caddy image"
         docker image rm -f $(docker image ls -q caddy) 2>&1 | tail -1 || true
     fi
 fi

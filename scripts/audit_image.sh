@@ -6,7 +6,12 @@
 # Resilience Act (Regulation (EU) 2024/2847): the requirements are about the
 # product as shipped, so a claim about a device has to be answerable from the
 # device, on demand, in a form somebody else can re-run. Each check names the
-# finding it comes from and says PASS, FAIL or UNKNOWN.
+# finding it comes from and says PASS, FAIL, NOTE or UNKNOWN.
+#
+# NOTE is a known limitation that is documented and deliberate — plain MQTT on
+# the LAN, a firewall that ships staged but off. It is neither a pass nor a
+# defect: marking it FAIL would teach people that FAILs are expected here, and
+# marking it PASS would hide it.
 #
 # Most of what remains open is image-side (F-04, F-05, F-10 and SSH
 # throttling), and none of it can be settled by reading the build scripts: the production path may differ from the USB bring-up path, and a
@@ -31,9 +36,10 @@
 #   1  at least one check failed
 #   2  the script itself could not run
 #
-# UNKNOWN never counts as a failure. A check that could not be performed is
-# not a check that passed, and saying so is the whole point — an audit that
-# quietly reports "fine" when it could not look is worse than no audit.
+# UNKNOWN and NOTE never count as a failure. A check that could not be
+# performed is not a check that passed, and saying so is the whole point — an
+# audit that quietly reports "fine" when it could not look is worse than no
+# audit.
 
 set -uo pipefail
 
@@ -63,6 +69,7 @@ IS_ROOT=0
 PASS_COUNT=0
 FAIL_COUNT=0
 UNKNOWN_COUNT=0
+NOTE_COUNT=0
 ROWS=()
 
 # ---------------------------------------------------------------- reporting
@@ -73,6 +80,7 @@ record() {
     case "$status" in
         PASS) PASS_COUNT=$((PASS_COUNT + 1)) ;;
         FAIL) FAIL_COUNT=$((FAIL_COUNT + 1)) ;;
+        NOTE) NOTE_COUNT=$((NOTE_COUNT + 1)) ;;
         *)    UNKNOWN_COUNT=$((UNKNOWN_COUNT + 1)) ;;
     esac
     ROWS+=("${status}|${finding}|${title}|${detail}")
@@ -102,7 +110,14 @@ needs_root() {
 PINNED_DIR="/etc/boneio"
 HELPER_V2="/usr/sbin/boneio-migrate-v2"
 HELPER_LEGACY="/usr/sbin/boneio-migrate"
+SYSTEM_HELPER="/usr/sbin/boneio-system"
 TRUSTED_DIR="/usr/lib/boneio/trusted"
+
+#: What check_ssh_password_state learned about the boneio login — locked,
+#: empty, set or shipped, or empty when it could not tell. check_sshd reads it:
+#: whether password authentication over SSH is a hole depends on which
+#: password it would accept.
+SERVICE_PASSWORD_STATE=""
 
 # Whether a path is a regular file owned by root and not writable by others.
 root_owned() {
@@ -234,7 +249,10 @@ closed-vocabulary helpers: $(printf '%s' "$unexpected" | tr '\n' ' '). Each of t
 separate path to root."
         return
     fi
-    if grep -qE 'install-helpers|reinstall' "$fragment" 2>/dev/null; then
+    # Comments skipped here as above: the shipped fragment explains, in a
+    # comment, that there is deliberately no reinstall rule — and matching that
+    # sentence made the audit fail on the very file that gets this right.
+    if grep -v '^[[:space:]]*#' "$fragment" 2>/dev/null | grep -qE 'install-helpers|reinstall'; then
         record FAIL "F-04" "$title" \
             "'${fragment}' contains a rule for reinstalling the helpers. A script that restores \
 the trust anchors lets an attacker re-pin their own key and sign every future plan; recovery is \
@@ -318,13 +336,44 @@ check_ssh_password_state() {
     state="$(passwd -S "$BONEIO_USER" 2>/dev/null | awk '{print $2}')"
     case "$state" in
         L|LK)
+            SERVICE_PASSWORD_STATE="locked"
             record PASS "F-04" "$title" "Account is locked — password login cannot succeed."
             ;;
         NP)
+            SERVICE_PASSWORD_STATE="empty"
             record FAIL "F-04" "$title" \
                 "Account has an EMPTY password. Worse than a default one."
             ;;
         P|PS)
+            # Since 1.6.17 a password being set is the intended state: the
+            # first-run wizard makes the owner's panel password the SSH one,
+            # once, through boneio-system. What matters is whether it is still
+            # the published default, and the helper can answer that — it
+            # compares the stored hash against 'Black' without the password
+            # ever leaving the device. Asked before anything else, because the
+            # expiry heuristic below predates it and cannot tell the two apart.
+            local helper_state=""
+            if [[ -x "$SYSTEM_HELPER" ]]; then
+                helper_state="$("$SYSTEM_HELPER" service-password-state 2>/dev/null \
+                    | grep -oE '"state": *"[a-z]+"' | grep -oE '[a-z]+"$' | tr -d '"')"
+            fi
+            case "$helper_state" in
+                set)
+                    SERVICE_PASSWORD_STATE="set"
+                    record PASS "F-04" "$title" \
+                        "A password is set and it is not the published default. On an image \
+from 1.6.17 on, that is the owner's password from the first-run wizard."
+                    return
+                    ;;
+                shipped)
+                    SERVICE_PASSWORD_STATE="shipped"
+                    record FAIL "F-04" "$title" \
+                        "The password is still the published default. Anyone who has read \
+UPDATE.md from before 1.6 can log in; change it with passwd or from the panel."
+                    return
+                    ;;
+            esac
+
             # The method prefix says how it is hashed, never the hash itself.
             local method expired
             method="$(awk -F: -v u="$BONEIO_USER" '$1==u {print $2}' /etc/shadow 2>/dev/null | cut -d'$' -f2)"
@@ -341,10 +390,13 @@ interactive login must replace it. That stops the shipped password persisting on
 it does not stop someone who knows it from logging in once and setting their own. Fully closing this \
 means shipping no usable password — keys only, or a per-device secret."
             else
-                record FAIL "F-04" "$title" \
-                    "A password is set (hash method \$${method:-?}\$) and NOT expired, so it \
-survives untouched on every device that ships. Confirm whether it is still the published default from \
-a workstation: sshpass -p 'Black' ssh -o PreferredAuthentications=password ${BONEIO_USER}@<device> true"
+                # Without the helper there is no way to tell the owner's
+                # password from the shipped one on this side, so this is not
+                # a verdict either way.
+                record UNKNOWN "F-04" "$title" \
+                    "A password is set (hash method \$${method:-?}\$) and not expired, and \
+${SYSTEM_HELPER} is not here to say whether it is the published default. Check from a workstation: \
+sshpass -p 'Black' ssh -o PreferredAuthentications=password ${BONEIO_USER}@<device> true"
             fi
             ;;
         *)
@@ -514,22 +566,57 @@ check_exposed_ports() {
         return
     fi
 
-    local exposed=()
-    local port
-    for port in "$WEB_PORT" "$PROXY_HTTP_PORT" "$MQTT_PORT"; do
-        if grep -qE "(0\.0\.0\.0|\[::\]|\*):${port}[[:space:]]" <<<"$listing"; then
-            exposed+=("$port")
+    # Each port is judged by what it would carry. The panel's own port in the
+    # clear is the finding. Caddy's plain-HTTP port is not, as long as all it
+    # does is send the browser to HTTPS: nothing but the redirect crosses the
+    # wire, and that is what the next check verifies. MQTT is reported on its
+    # own row, because it is plain by design rather than by accident.
+    local exposed=() redirecting=""
+    if bound_everywhere "$listing" "$WEB_PORT"; then
+        exposed+=("$WEB_PORT")
+    fi
+    if bound_everywhere "$listing" "$PROXY_HTTP_PORT"; then
+        if http_redirects "$PROXY_HTTP_PORT"; then
+            redirecting="$PROXY_HTTP_PORT"
+        else
+            exposed+=("$PROXY_HTTP_PORT")
         fi
-    done
+    fi
 
     if [[ ${#exposed[@]} -eq 0 ]]; then
         record PASS "F-10" "$title" \
-            "Ports ${WEB_PORT}, ${PROXY_HTTP_PORT} and ${MQTT_PORT} are not bound to every interface."
+            "The panel reaches the network only through the TLS proxy on ${PROXY_TLS_PORT}.\
+${redirecting:+ Port ${redirecting} is open but only redirects to HTTPS.}"
     else
         record FAIL "F-10" "$title" \
             "Bound to every interface, in clear text: $(IFS=,; echo "${exposed[*]}"). The panel should \
 reach the network only through the TLS proxy on ${PROXY_TLS_PORT}."
     fi
+
+    if bound_everywhere "$listing" "$MQTT_PORT"; then
+        record NOTE "F-10" "MQTT in clear text on the network" \
+            "The broker listens on ${MQTT_PORT} on every interface, without TLS. Home Assistant on \
+another host connects there, so it is reachable on purpose; every account needs a password and \
+those are per device (see the F-05 row). The channel itself is not encrypted."
+    else
+        record PASS "F-10" "MQTT in clear text on the network" \
+            "The broker is not bound to every interface on ${MQTT_PORT}."
+    fi
+}
+
+# Whether a port is bound on every interface in an ss/netstat listing.
+bound_everywhere() {
+    grep -qE "(0\.0\.0\.0|\[::\]|\*):${2}[[:space:]]" <<<"$1"
+}
+
+# Whether plain HTTP on a local port answers with a redirect to https.
+http_redirects() {
+    command -v curl >/dev/null 2>&1 || return 1
+    local out code location
+    out="$(curl -s -m 6 -o /dev/null -w '%{http_code} %{redirect_url}' "http://127.0.0.1:${1}/" 2>/dev/null)"
+    code="${out%% *}"
+    location="${out#* }"
+    [[ "$code" =~ ^30[1278]$ && "$location" == https://* ]]
 }
 
 check_plaintext_panel() {
@@ -573,9 +660,21 @@ check_certificate_lifetime() {
               - $(date -d "$not_before" +%s 2>/dev/null || echo 0) ) / 3600 ))
 
     if grep -qi "Caddy Local Authority" <<<"$issuer"; then
-        record FAIL "F-10" "$title" \
-            "Self-signed by Caddy's internal CA, valid ${hours}h. Browsers warn on every visit, and \
-anyone who trusts it by hand re-does that $(( hours > 0 ? 24 / hours : 0 ))× a day."
+        # A device on a LAN cannot get a certificate from a public CA, so the
+        # local one is not the finding. Its lifetime is: the 1.5.0 report found
+        # a twelve-hour leaf, which nobody can reasonably pin or trust by hand.
+        # 1.6 issues 180 days, lets the owner download the root to trust it
+        # once, and accepts an uploaded certificate instead.
+        local days=$(( hours / 24 ))
+        if (( days >= 30 )); then
+            record PASS "F-10" "$title" \
+                "Issued by the device's own CA (Caddy), valid ${days} days. Browsers warn until \
+the owner trusts the device's root certificate or uploads their own."
+        else
+            record FAIL "F-10" "$title" \
+                "Issued by the device's own CA (Caddy), valid only ${hours}h. A leaf that short \
+cannot be trusted by hand in any lasting way; 1.6 issues 180 days."
+        fi
     else
         record PASS "F-10" "$title" "Issued by ${issuer}, valid ${hours}h."
     fi
@@ -619,11 +718,32 @@ check_sshd() {
     permit_root="$(awk '/^permitrootlogin /{print $2}' <<<"$config")"
     empty="$(awk '/^permitemptypasswords /{print $2}' <<<"$config")"
 
+    # Password login over SSH is the owner's way into a device in a cabinet,
+    # so being enabled is not the finding. Which password it accepts is — and
+    # check_ssh_password_state has already found out.
     if [[ "$password_auth" == "no" ]]; then
         record PASS "F-04" "SSH password authentication" "Disabled; keys only."
     else
-        record FAIL "F-04" "SSH password authentication" \
-            "Enabled. With no shipped password this is merely unnecessary; with one it is the way in."
+        case "$SERVICE_PASSWORD_STATE" in
+            set)
+                record PASS "F-04" "SSH password authentication" \
+                    "Enabled, and the only password it accepts for '${BONEIO_USER}' is the owner's."
+                ;;
+            locked)
+                record PASS "F-04" "SSH password authentication" \
+                    "Enabled, but '${BONEIO_USER}' is locked, so no password gets in."
+                ;;
+            shipped|empty)
+                record FAIL "F-04" "SSH password authentication" \
+                    "Enabled, and '${BONEIO_USER}' accepts the ${SERVICE_PASSWORD_STATE} password — \
+this is the way in."
+                ;;
+            *)
+                record UNKNOWN "F-04" "SSH password authentication" \
+                    "Enabled. Whether that matters depends on the '${BONEIO_USER}' password, which \
+could not be classified — see that row."
+                ;;
+        esac
     fi
 
     if [[ "$empty" == "yes" ]]; then
@@ -647,11 +767,37 @@ check_ssh_throttling() {
     local title="SSH brute-force throttling"
     if systemctl is-active --quiet fail2ban 2>/dev/null; then
         record PASS "F-06" "$title" "fail2ban is running."
+        return
+    fi
+
+    # OpenSSH 9.8 and later throttle by source address themselves:
+    # PerSourcePenalties refuses new connections from an address that keeps
+    # failing, for a time that grows with each failure. It is on by default in
+    # the sshd Trixie ships, so a fail2ban-only check reported a throttled
+    # device as unthrottled.
+    if [[ $IS_ROOT -eq 0 ]]; then
+        needs_root "F-06" "$title"
+        return
+    fi
+    local penalties authfail max
+    penalties="$(sshd_effective | awk '/^persourcepenalties /{sub(/^persourcepenalties /, ""); print}')"
+    authfail="$(grep -oE 'authfail:[0-9.]+' <<<"$penalties" | cut -d: -f2)"
+    max="$(grep -oE 'max:[0-9.]+' <<<"$penalties" | cut -d: -f2)"
+    if [[ -n "$authfail" ]] && awk -v a="$authfail" 'BEGIN { exit !(a > 0) }'; then
+        record PASS "F-06" "$title" \
+            "sshd PerSourcePenalties is on: each failed login costs the source address \
+${authfail%%.*}s, and an address that keeps failing is refused for up to ${max%%.*}s."
     elif command -v fail2ban-server >/dev/null 2>&1; then
-        record FAIL "F-06" "$title" "fail2ban is installed but not running."
+        record FAIL "F-06" "$title" "fail2ban is installed but not running, and sshd \
+PerSourcePenalties is off."
+    elif [[ -z "$penalties" ]]; then
+        record FAIL "F-06" "$title" \
+            "Nothing throttles SSH: no fail2ban, and this sshd has no PerSourcePenalties. The \
+web login is rate-limited since 1.6; SSH is not."
     else
         record FAIL "F-06" "$title" \
-            "Nothing throttles SSH. The web login is rate-limited since 1.6; SSH is not."
+            "Nothing throttles SSH: no fail2ban, and sshd PerSourcePenalties is set to \
+'${penalties}'."
     fi
 }
 
@@ -704,12 +850,20 @@ check_api_docs() {
     # AuthMiddleware only gates paths under /api, so these three sit outside it
     # and cannot be protected — they have to be absent. openapi.json is the one
     # that matters: it is a complete map of every route, parameter and schema.
+    # The status code alone cannot answer this. Every path the API does not
+    # own falls through to the panel's single-page app, which answers 200 with
+    # its index.html — so /docs "answered" on every device, docs or not. What
+    # decides it is the body: the OpenAPI document, or the Swagger / ReDoc page.
     local open=""
-    local path code
+    local path body marker
     for path in /docs /redoc /openapi.json; do
-        code="$(curl -s -m 6 -o /dev/null -w '%{http_code}' \
-            "http://127.0.0.1:${WEB_PORT}${path}" 2>/dev/null)"
-        [[ "$code" == "200" ]] && open="${open}${open:+, }${path}"
+        case "$path" in
+            /docs) marker='swagger-ui' ;;
+            /redoc) marker='redoc' ;;
+            *) marker='"openapi"' ;;
+        esac
+        body="$(curl -s -m 6 "http://127.0.0.1:${WEB_PORT}${path}" 2>/dev/null | head -c 65536)"
+        grep -qiF "$marker" <<<"$body" && open="${open}${open:+, }${path}"
     done
 
     if [[ -n "$open" ]]; then
@@ -783,9 +937,15 @@ check_firewall_state() {
         # setup_boneio.sh stages allow rules but never enables ufw, so this is
         # the expected state. Reported rather than passed over: someone reading
         # the rule list could reasonably think the device is filtered.
-        record UNKNOWN "F-10" "$title" \
-            "ufw is inactive — the allow rules staged by setup are not in force and nothing is \
-filtered. Enabling it is a deliberate choice; check that 22 and 8443 are in the rule list first."
+        #
+        # NOTE rather than UNKNOWN: the state was read, it is the one the image
+        # ships, and the reason is on record (setup_boneio.sh, step 1).
+        record NOTE "F-10" "$title" \
+            "ufw is inactive, as the image ships it — the allow rules staged by setup are not in \
+force and nothing is filtered. Those rules cover exactly the ports that listen anyway, and Docker's \
+published ports bypass ufw, so enabling it would not narrow the surface; a default-deny firewall \
+turned on remotely is how a controller in a cabinet loses its only way back in. Enabling it is a \
+deliberate choice; check that 22 and 8443 are in the rule list first."
     elif [[ "$state" == *"active"* ]]; then
         local missing=""
         local port
@@ -847,8 +1007,8 @@ if [[ $JSON -eq 1 ]]; then
     printf '{\n  "host": "%s",\n' "$(json_escape "$(hostname)")"
     printf '  "date": "%s",\n' "$(date -Is)"
     printf '  "root": %s,\n' "$([[ $IS_ROOT -eq 1 ]] && echo true || echo false)"
-    printf '  "summary": {"pass": %d, "fail": %d, "unknown": %d},\n' \
-        "$PASS_COUNT" "$FAIL_COUNT" "$UNKNOWN_COUNT"
+    printf '  "summary": {"pass": %d, "fail": %d, "note": %d, "unknown": %d},\n' \
+        "$PASS_COUNT" "$FAIL_COUNT" "$NOTE_COUNT" "$UNKNOWN_COUNT"
     printf '  "checks": [\n'
     for i in "${!ROWS[@]}"; do
         IFS='|' read -r status finding title detail <<<"${ROWS[$i]}"
@@ -872,7 +1032,8 @@ else
         echo "$detail" | tr -s ' ' | fold -s -w 72 | sed 's/^/                /'
         echo
     done
-    echo "pass ${PASS_COUNT}   fail ${FAIL_COUNT}   unknown ${UNKNOWN_COUNT}"
+    echo "pass ${PASS_COUNT}   fail ${FAIL_COUNT}   note ${NOTE_COUNT}   unknown ${UNKNOWN_COUNT}"
+    [[ $NOTE_COUNT -gt 0 ]] && echo "NOTE is a known, documented limitation — not a pass and not a defect."
     [[ $UNKNOWN_COUNT -gt 0 ]] && echo "UNKNOWN is not a pass — it means the check could not be performed."
 fi
 

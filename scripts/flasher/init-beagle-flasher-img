@@ -788,6 +788,14 @@ station_boot_or_shutdown () {
 
 		station_prepare_sd_for_tester
 
+		# The card's own first-boot board setup would replace the tester
+		# configuration with a product template — allow_anonymous with it, so
+		# the tester got nothing but 403 and the OLED said "Setup required".
+		# The card is the tester's system, not a board to fit, so it is done.
+		mkdir -p /var/lib/boneio && touch /var/lib/boneio/board-setup.done
+		# boneIO shows the station state and the tester's verdict on the OLED.
+		mkdir -p /etc/boneio && touch /etc/boneio/flasher-station
+
 		# Generate SSH host keys for the SD card system if missing,
 		# and remove ssh_regenerate / disable bbbio-set-sysconf so it NEVER triggers a reboot in station mode.
 		if [ ! -f /etc/ssh/ssh_host_rsa_key ] && [ ! -f /etc/ssh/ssh_host_ed25519_key ]; then

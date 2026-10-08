@@ -898,6 +898,10 @@ for revision_dir in "$FACTORY_CONFIG"/*/; do
         cp "$variant_dir"/*.yaml "$CONFIGS_DIR/$revision/$variant/"
     done
 done
+# Made by root above, warmed by the boneio account below: without this the
+# warm-up cannot write config.yaml.cache.pkl, the loader swallows that, and
+# every board validates its config at first boot (20-30 s).
+chown -R "${BONEIO_USER}:${BONEIO_USER}" "$CONFIGS_DIR"
 
 # Pre-generate schema cache and config caches for all 5 variants
 log_info "   Pre-generating schema cache and config caches..."

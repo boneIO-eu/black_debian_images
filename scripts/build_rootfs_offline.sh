@@ -581,7 +581,7 @@ check "board setup armed for first boot"     "[ ! -e '$MNT/var/lib/boneio/board-
 check "every revision has a warm base config" "[ -s '$MNT/home/boneio/.cache/boneio_configs/0.8/base/config.yaml.cache.pkl' ] && [ -s '$MNT/home/boneio/.cache/boneio_configs/1.0/base/config.yaml.cache.pkl' ] && [ -s '$MNT/home/boneio/.cache/boneio_configs/1.1/base/config.yaml.cache.pkl' ]"
 check "MQTT passwords armed for first boot"  "[ ! -e '$MNT/var/lib/boneio/mqtt-firstboot.done' ] && [ -L '$MNT/etc/systemd/system/multi-user.target.wants/boneio-mqtt-firstboot.service' ]"
 check "docker store inherited"               "[ -s '$MNT/var/lib/docker/image/overlay2/repositories.json' ]"
-check "Caddy is a system service (enabled, marker, no caddy in compose)" "[ -e '$MNT/etc/boneio/proxy-native' ] && [ -e '$MNT/etc/systemd/system/multi-user.target.wants/caddy.service' -o -e '$MNT/usr/lib/systemd/system/multi-user.target.wants/caddy.service' ] && ! grep -qE '^[[:space:]]*caddy:' '$MNT/home/boneio/docker/nodered/docker-compose.yaml'"
+check "Caddy is a system service (enabled, marker, no caddy in compose)" "[ -e '$MNT/etc/boneio/proxy-native' ] && [ -L '$MNT/etc/systemd/system/multi-user.target.wants/caddy.service' ] && ! grep -qE '^[[:space:]]*caddy:' '$MNT/home/boneio/docker/nodered/docker-compose.yaml'"
 if [ -n "$BONEIO_VERSION" ]; then
     GOT=$(nsp --chdir=/tmp /home/boneio/boneio/venv/bin/python3 -c 'import importlib.metadata as m; print(m.version("boneio"))' 2>/dev/null | tr -d '\r')
     check "boneio == $BONEIO_VERSION (got $GOT)" "[ '$GOT' = '$BONEIO_VERSION' ]"

@@ -797,6 +797,13 @@ station_boot_or_shutdown () {
 		# Not under /etc/boneio: that is root-only (the MQTT password), and
 		# boneIO, running as boneio, would never see it.
 		touch /var/lib/boneio/flasher-station
+		# No SSH guessing penalty on the station card. Only the station talks
+		# to it, every board brings new host keys, and one refused key would
+		# lock the station out for five minutes. "PerSourcePenalties no" does
+		# not hold against boneIO's 15-boneio-penalties.conf read after it;
+		# an exempt list does, because sshd keeps the first one it reads.
+		printf 'PerSourcePenaltyExemptList 0.0.0.0/0,::/0\nPerSourceMaxStartups none\n' \
+			> /etc/ssh/sshd_config.d/05-boneio-station.conf
 
 		# Generate SSH host keys for the SD card system if missing,
 		# and remove ssh_regenerate / disable bbbio-set-sysconf so it NEVER triggers a reboot in station mode.

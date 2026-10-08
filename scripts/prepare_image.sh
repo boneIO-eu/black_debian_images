@@ -93,6 +93,8 @@ rm -f /etc/ssh/ssh_host_* /etc/bbb.io/ssh_regenerate
 find /var/log -type f -exec truncate -s 0 {} \;
 rm -rf /tmp/*
 rm -rf /var/tmp/*
+# The build board's runtime state, relay polarity flags included.
+rm -f /home/boneio/boneiostate.json
 
 # Drop the build-time sudo rule and expire the shipped password (F-04).
 #

@@ -577,6 +577,8 @@ check "no SSH host keys"                     "! ls '$MNT'/etc/ssh/ssh_host_* >/d
 check "sshd makes its own host keys"         "grep -q '^ExecStartPre=/usr/bin/ssh-keygen -A' '$MNT/etc/systemd/system/ssh.service.d/10-boneio-hostkeys.conf'"
 check "no sysconf key regeneration armed"    "[ ! -e '$MNT/etc/bbb.io/ssh_regenerate' ]"
 check "iptables back on nft"                  "[ \"\$(readlink '$MNT/etc/alternatives/iptables')\" = '${IPT_ALT_IP4:-/usr/sbin/iptables-nft}' ]"
+check "no runtime state from the build board" "[ ! -e '$MNT/home/boneio/boneiostate.json' ]"
+check "hostname from MAC armed for first boot" "[ -L '$MNT/etc/systemd/system/multi-user.target.wants/set-hostname-once.service' ] && [ \"\$(cat '$MNT/etc/hostname')\" = boneio ]"
 check "board setup armed for first boot"     "[ ! -e '$MNT/var/lib/boneio/board-setup.done' ] && [ -L '$MNT/etc/systemd/system/multi-user.target.wants/boneio-board-setup.service' ]"
 check "every revision has a warm base config" "[ -s '$MNT/home/boneio/.cache/boneio_configs/0.8/base/config.yaml.cache.pkl' ] && [ -s '$MNT/home/boneio/.cache/boneio_configs/1.0/base/config.yaml.cache.pkl' ] && [ -s '$MNT/home/boneio/.cache/boneio_configs/1.1/base/config.yaml.cache.pkl' ]"
 check "MQTT passwords armed for first boot"  "[ ! -e '$MNT/var/lib/boneio/mqtt-firstboot.done' ] && [ -L '$MNT/etc/systemd/system/multi-user.target.wants/boneio-mqtt-firstboot.service' ]"

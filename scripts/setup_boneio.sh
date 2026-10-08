@@ -1234,8 +1234,8 @@ sed -i 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
 locale-gen en_US.UTF-8
 update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 
-# set-hostname-once.sh + set-hostname-once.service are managed by
-# boneio-migrate (applied in STEP 9 above). No heredoc needed here.
+# set-hostname-once.sh + set-hostname-once.service are installed by
+# boneio-migrate (applied in STEP 9 above); sealing below re-arms the service.
 
 # Clean up
 apt-get autoremove -y --purge
@@ -1306,6 +1306,17 @@ rm -f /etc/ssh/ssh_host_* /etc/bbb.io/ssh_regenerate
 # administrator's login for every one of those controllers. boneIO draws a
 # new one, bound to the machine-id, on first start.
 rm -f "${BONEIO_HOME}/boneio/jwt_secret" "${BONEIO_HOME}/boneio/.jwt_secret.tmp"
+# The build board's runtime state, its relay polarity flags included. A 1.x
+# board records its MCPs as active-low here; a 0.8 flashed from that image
+# reads the flag back and holds every relay on. Board setup probes the board
+# that actually boots and writes its own.
+rm -f "${BONEIO_HOME}/boneiostate.json"
+# The hostname service disables itself once it has named a board, and on the
+# build board it already has. Re-arm it, or every unit boots under the build
+# board's name. A neutral name until it runs, not the build board's.
+systemctl enable set-hostname-once.service
+echo boneio > /etc/hostname
+sed -i "s/^127\.0\.1\.1.*/127.0.1.1\tboneio/" /etc/hosts
 # Caddy's internal CA, its leaves and the hostname marker that decides whether
 # the generator keeps them. With the marker gone the first start mints a
 # CA of the device's own. The packaged Caddy keeps its data under

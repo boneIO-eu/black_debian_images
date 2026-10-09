@@ -561,9 +561,10 @@ else
         mosquitto_passwd -b /etc/mosquitto/passwd "${mqtt_account}" "${mqtt_generated}"
         if [ "${mqtt_account}" = "boneio" ]; then
             # The app's own account: kept so the config step below can point
-            # mqtt.yaml at it, possibly in a later invocation. Root-only, since
-            # it is the cleartext the app will authenticate with.
-            install -d -m 0700 /etc/boneio
+            # mqtt.yaml at it, possibly in a later invocation. The file is
+            # root-only, being the cleartext the app will authenticate with;
+            # the directory is not: boneIO reads its proxy markers there.
+            install -d -m 0755 /etc/boneio
             printf '%s\n' "${mqtt_generated}" > /etc/boneio/mqtt-boneio.pass
             chmod 0600 /etc/boneio/mqtt-boneio.pass
         fi
@@ -757,7 +758,7 @@ else
         # Bootstrapped by an older build, so the broker still holds the shared
         # default for this account. Rotate it — we own both of its sides.
         MQTT_BONEIO_PASS="$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-24)"
-        install -d -m 0700 /etc/boneio
+        install -d -m 0755 /etc/boneio
         printf '%s\n' "${MQTT_BONEIO_PASS}" > /etc/boneio/mqtt-boneio.pass
         chmod 0600 /etc/boneio/mqtt-boneio.pass
         mosquitto_passwd -b /etc/mosquitto/passwd boneio "${MQTT_BONEIO_PASS}"

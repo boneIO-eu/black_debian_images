@@ -552,6 +552,7 @@ check "board setup armed for first boot"     "[ ! -e '$MNT/var/lib/boneio/board-
 check "every revision has a warm base config" "[ -s '$MNT/home/boneio/.cache/boneio_configs/0.8/base/config.yaml.cache.pkl' ] && [ -s '$MNT/home/boneio/.cache/boneio_configs/1.0/base/config.yaml.cache.pkl' ] && [ -s '$MNT/home/boneio/.cache/boneio_configs/1.1/base/config.yaml.cache.pkl' ]"
 check "MQTT passwords armed for first boot"  "[ ! -e '$MNT/var/lib/boneio/mqtt-firstboot.done' ] && [ -L '$MNT/etc/systemd/system/multi-user.target.wants/boneio-mqtt-firstboot.service' ]"
 check "docker store inherited"               "[ -s '$MNT/var/lib/docker/image/overlay2/repositories.json' ]"
+check "/etc/boneio readable by boneIO (0755)" "[ \"\$(stat -c %a '$MNT/etc/boneio')\" = 755 ]"
 check "no Caddy apt repository"               "[ ! -e '$MNT/etc/apt/sources.list.d/caddy-stable.list' ] && [ ! -e '$MNT/etc/apt/apt.conf.d/53boneio-caddy' ]"
 CADDY_PIN=$(sed -n 's/^CADDY_VERSION = "\(.*\)"$/\1/p' "$MNT/usr/sbin/boneio-containers")
 CADDY_GOT=$(nsp dpkg-query -W --showformat='${Version}' caddy 2>/dev/null | tr -d '\r')

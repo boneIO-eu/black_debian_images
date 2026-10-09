@@ -33,7 +33,8 @@ done
 chown root:mosquitto "$PASSWD"
 chmod 0640 "$PASSWD"
 
-install -d -m 0700 /etc/boneio
+# 0755, the password file is the secret: boneIO reads its proxy markers here.
+install -d -m 0755 /etc/boneio
 printf '%s\n' "$BONEIO_PW" > /etc/boneio/mqtt-boneio.pass
 chmod 0600 /etc/boneio/mqtt-boneio.pass
 

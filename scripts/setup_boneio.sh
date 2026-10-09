@@ -942,18 +942,18 @@ log_info "   BoneIO application installed"
 
 # Caddy is the system's own service from the first boot, not a container.
 #
-# The migrations above staged everything it needs (migration 1.6.42): Caddy's
-# apt repository with its key and pin, the generator, and a drop-in that keeps
-# the package from starting until /etc/boneio/proxy-native exists. So the order
-# is: update the lists (all of them, the Caddy one is new), install the
+# The migrations above staged everything it needs (1.6.42, 1.6.44): the
+# generator, a drop-in that keeps the package from starting until
+# /etc/boneio/proxy-native exists, and boneio-containers, which installs the
+# Caddy release .deb from GitHub pinned by its SHA-512. Not apt: Caddy's
+# repository on Cloudsmith answers 402 when its quota runs out, and Debian's
+# caddy is too old for the generated Caddyfile. So the order is: install the
 # package, then put the marker, then the compose file without a caddy service.
 # This is the end state boneio-containers' proxy-switch steps leave on a
 # controller that was already in the field, reached without the switch.
-CADDY_LIST="/etc/apt/sources.list.d/caddy-stable.list"
-CADDY_KEYRING="/usr/share/keyrings/caddy-stable-archive-keyring.gpg"
 PROXY_NATIVE_MARKER="/etc/boneio/proxy-native"
 COMPOSE_NATIVE="/usr/lib/boneio/trusted/docker-compose-native-proxy.yaml"
-for f in "$CADDY_LIST" "$CADDY_KEYRING" "$COMPOSE_NATIVE" \
+for f in "$COMPOSE_NATIVE" \
          /etc/systemd/system/caddy.service.d/boneio.conf \
          /usr/lib/boneio/proxy-config /usr/lib/boneio/trusted/boneio-proxy-config; do
     if [ ! -e "$f" ]; then
@@ -964,9 +964,11 @@ done
 log_info "   Installing Caddy as a system service..."
 export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
-apt-get update
 # The drop-in's condition keeps the postinst from starting a stock Caddy on :80.
-apt-get install -y --no-install-recommends caddy
+if ! /usr/sbin/boneio-containers caddy-install; then
+    log_error "❌ boneio-containers could not install Caddy (needs migration 1.6.44 and github.com)."
+    exit 1
+fi
 touch "$PROXY_NATIVE_MARKER"
 chmod 0644 "$PROXY_NATIVE_MARKER"
 systemctl enable caddy

@@ -282,6 +282,11 @@ nsp() {
 # ─── 3. dist-upgrade ─────────────────────────────────────────────────────────
 
 phase "3/6 apt dist-upgrade (armhf under qemu-user)"
+# Images from 1.6.42 to 1.6.43 list Caddy's apt repository on Cloudsmith, which
+# answers 402 whenever its transfer quota runs out and then fails every
+# apt-get update below. Migration 1.6.44 removes the same files.
+rm -f "$MNT/etc/apt/sources.list.d/caddy-stable.list" "$MNT/etc/apt/preferences.d/caddy" \
+      "$MNT/etc/apt/apt.conf.d/53boneio-caddy" "$MNT/usr/share/keyrings/caddy-stable-archive-keyring.gpg"
 # A few tries: the BeagleBoard archive is republished in place, and a build
 # that lands mid-sync gets "File has unexpected size … Mirror sync in
 # progress?" for a minute or two. Failing for good after that is right —
@@ -409,47 +414,11 @@ cp -n "$MNT"/var/cache/apt/archives/*.deb "$BUILD_CACHE/apt/" 2>/dev/null || tru
 nsp apt-get -y autoremove --purge
 nsp apt-get clean
 
-# Caddy's package, fetched on the host like the rest. setup_boneio.sh installs
-# it, but the repository it comes from is staged by boneIO's migration 1.6.42
-# — which runs inside that very setup, after the point where the downloads
-# are made. Without the repository here apt knows no 'caddy', the prefetch
-# finds nothing, and the package is downloaded by apt under qemu-user at a
-# few kB/s. So its list, key and pin are put in place now, from the wheel
-# being built or, failing that, from what the inherited image already has.
-# Migration 1.6.42 writes the same files again; nothing here is left that it
-# would not leave itself.
-CADDY_LIST_REL="etc/apt/sources.list.d/caddy-stable.list"
-CADDY_KEY_REL="usr/share/keyrings/caddy-stable-archive-keyring.gpg"
-CADDY_PIN_REL="etc/apt/preferences.d/caddy"
-A=boneio/migrations/assets/apt
-# A wheel older than 1.6.42 has no such assets: leave the rootfs alone then,
-# and fall through to the warning below.
-if [ -n "$BONEIO_WHEEL_SRC" ] \
-   && unzip -l "$BONEIO_WHEEL_SRC" "$A/caddy-stable.list" "$A/caddy-stable-archive-keyring.gpg" "$A/caddy-pin.pref" >/dev/null 2>&1; then
-    unzip -p "$BONEIO_WHEEL_SRC" "$A/caddy-stable.list"                > "$MNT/$CADDY_LIST_REL"
-    unzip -p "$BONEIO_WHEEL_SRC" "$A/caddy-stable-archive-keyring.gpg" > "$MNT/$CADDY_KEY_REL"
-    unzip -p "$BONEIO_WHEEL_SRC" "$A/caddy-pin.pref"                   > "$MNT/$CADDY_PIN_REL"
-fi
-if [ -s "$MNT/$CADDY_LIST_REL" ] && [ -s "$MNT/$CADDY_KEY_REL" ]; then
-    # Only Caddy's list, as the switch does: the others were updated above.
-    nsp apt-get update --error-on=any \
-        -o Dir::Etc::sourcelist=sources.list.d/caddy-stable.list \
-        -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0 \
-        || die "cannot read Caddy's repository"
-    prefetch_debs install --no-install-recommends caddy
-    # Installed here, not left to setup_boneio.sh: its steps 0 and 3 run
-    # apt-get clean, which empties the archive before step 9 installs Caddy, so
-    # the prefetched file would be thrown away and downloaded again under qemu
-    # on every build. Setup's own install is then a no-op. Safe: there is no
-    # systemd under --as-pid2 and SYSTEMD_OFFLINE=1 makes the postinst's start
-    # a no-op, so the package never runs; the drop-in that gates it on the
-    # marker is staged later by migration 1.6.42, and setup still refuses to
-    # continue without it.
-    nsp apt-get install -y --no-install-recommends caddy
-    cp -n "$MNT"/var/cache/apt/archives/*.deb "$BUILD_CACHE/apt/" 2>/dev/null || true
-else
-    warn "No Caddy repository files (build from PyPI on an image older than 1.6.42?) — apt downloads the package itself, slowly"
-fi
+# Caddy is not apt's: setup_boneio.sh has boneio-containers install the
+# release .deb from GitHub, pinned in the helper (migration 1.6.44). The base
+# image already has the pinned one, so that is a no-op until the pin moves.
+# ponytail: a moved pin is downloaded under qemu-user during setup, slowly and
+# once per pin; prefetch it on the host into /var/cache/boneio if that hurts.
 
 # The kernel the image will boot. Same rule setup_boneio.sh uses for
 # NEWEST_KERNEL (ls -t), so its "kernel upgraded, reboot" check sees no change.
@@ -583,6 +552,10 @@ check "board setup armed for first boot"     "[ ! -e '$MNT/var/lib/boneio/board-
 check "every revision has a warm base config" "[ -s '$MNT/home/boneio/.cache/boneio_configs/0.8/base/config.yaml.cache.pkl' ] && [ -s '$MNT/home/boneio/.cache/boneio_configs/1.0/base/config.yaml.cache.pkl' ] && [ -s '$MNT/home/boneio/.cache/boneio_configs/1.1/base/config.yaml.cache.pkl' ]"
 check "MQTT passwords armed for first boot"  "[ ! -e '$MNT/var/lib/boneio/mqtt-firstboot.done' ] && [ -L '$MNT/etc/systemd/system/multi-user.target.wants/boneio-mqtt-firstboot.service' ]"
 check "docker store inherited"               "[ -s '$MNT/var/lib/docker/image/overlay2/repositories.json' ]"
+check "no Caddy apt repository"               "[ ! -e '$MNT/etc/apt/sources.list.d/caddy-stable.list' ] && [ ! -e '$MNT/etc/apt/apt.conf.d/53boneio-caddy' ]"
+CADDY_PIN=$(sed -n 's/^CADDY_VERSION = "\(.*\)"$/\1/p' "$MNT/usr/sbin/boneio-containers")
+CADDY_GOT=$(nsp dpkg-query -W --showformat='${Version}' caddy 2>/dev/null | tr -d '\r')
+check "caddy == pinned $CADDY_PIN (got $CADDY_GOT)" "[ -n '$CADDY_PIN' ] && [ '$CADDY_GOT' = '$CADDY_PIN' ]"
 check "Caddy is a system service (enabled, marker, no caddy in compose)" "[ -e '$MNT/etc/boneio/proxy-native' ] && [ -L '$MNT/etc/systemd/system/multi-user.target.wants/caddy.service' ] && ! grep -qE '^[[:space:]]*caddy:' '$MNT/home/boneio/docker/nodered/docker-compose.yaml'"
 if [ -n "$BONEIO_VERSION" ]; then
     GOT=$(nsp --chdir=/tmp /home/boneio/boneio/venv/bin/python3 -c 'import importlib.metadata as m; print(m.version("boneio"))' 2>/dev/null | tr -d '\r')

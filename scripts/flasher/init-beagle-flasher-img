@@ -477,7 +477,13 @@ fix_emmc_rootfs () {
 	fi
 	message="INFO: Running resize2fs on ${EMMC_ROOTFS}..." ; broadcast
 	RESIZE_OK=false
-	if resize2fs ${EMMC_ROOTFS}; then
+	# -f: the BBB has no RTC battery, so the flasher runs with a clock in 2000.
+	# e2fsck then records its check as made before the image's last mount, and
+	# resize2fs without -f answers "Please run 'e2fsck -f' first" however many
+	# times it is run. The check has just passed, which is what -f stands for.
+	RESIZE_FORCE=""
+	[ $E2FSCK_RC -le 1 ] && RESIZE_FORCE="-f"
+	if resize2fs ${RESIZE_FORCE} ${EMMC_ROOTFS}; then
 		message="INFO: resize2fs succeeded" ; broadcast
 		RESIZE_OK=true
 	else

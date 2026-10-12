@@ -631,7 +631,8 @@ create_emmc_flasher() {
 # that name nothing a vulnerability database knows.
 write_sbom() {
     local sbom="${OUTPUT_DIR}/${BASE_NAME}.cdx.json"
-    local raw="/tmp/boneio_syft.cdx.json"
+    local raw
+    raw="$(mktemp)" || return 1
 
     # Called under `if !`, where set -e does not apply: every step returns on
     # its own, and a file left by an earlier build of this version must not
@@ -641,12 +642,14 @@ write_sbom() {
     SYFT_CHECK_FOR_APP_UPDATE=false \
     SYFT_LINUX_KERNEL_CATALOG_MODULES=false \
     SYFT_FILE_METADATA_SELECTION=none \
-        syft scan "dir:$MOUNT_POINT" -q \
+        syft scan "dir:$MOUNT_POINT" \
             --override-default-catalogers image \
             --source-name boneio-black --source-version "$VERSION" \
-            -o "cyclonedx-json@1.6=$raw" || return 1
-    python3 "$SCRIPT_DIR/finalize_sbom.py" "$raw" "$MOUNT_POINT" "$VERSION" "$sbom" || return 1
+            -o "cyclonedx-json@1.6=$raw" \
+        && python3 "$SCRIPT_DIR/finalize_sbom.py" "$raw" "$MOUNT_POINT" "$VERSION" "$sbom"
+    local status=$?
     rm -f "$raw"
+    [ "$status" -eq 0 ] || return 1
     if [ -n "$ACTUAL_UID" ] && [ -n "$ACTUAL_GID" ]; then
         chown "$ACTUAL_UID:$ACTUAL_GID" "$sbom"
     fi

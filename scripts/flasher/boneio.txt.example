@@ -53,12 +53,19 @@
 #   the account so the owner's first password, from the first-run wizard,
 #   becomes it — and this gives that up. Bench boards only.
 #
-#   The two settings differ by which disk they touch:
-#     BONEIO_STATION_PASSWORD  → the SD card you booted from
+#   The settings differ by which disk they touch:
+#     BONEIO_STATION_PASSWORD  → the SD card you booted from, in station mode
 #     BONEIO_EMMC_PASSWORD     → the eMMC you just wrote
+#     BONEIO_SD_PASSWORD       → the SD card, booted as the controller
 #
-#   Neither applies to an image built by setup_boneio.sh and booted straight
-#   from a card. That one takes BONEIO_USER_PASSWORD at build time.
+#   The first two do nothing on a card booted straight as the controller.
+#   That one takes:
+#
+#   BONEIO_SD_PASSWORD=<some-password>
+#     Sets a working password for boneio on the system booted from THIS card,
+#   at its first start, so SSH works without the first-run wizard. The line
+#   is then replaced with BONEIO_SD_PASSWORD_SET=1 — the password does not
+#   stay on the card. Bench cards only, like BONEIO_EMMC_PASSWORD.
 #
 # A note on being locked out: on a board flashed without either setting, no
 # password logs in as boneio — not 'Black', not anything — until the owner
@@ -128,6 +135,7 @@
 # BONEIO_FLASHER_STATION=1
 # BONEIO_STATION_PASSWORD=Black
 # BONEIO_EMMC_PASSWORD=
+# BONEIO_SD_PASSWORD=
 
 # BONEIO_RESET_ACCOUNTS=1
 # BONEIO_KEEP_CONFIG=1

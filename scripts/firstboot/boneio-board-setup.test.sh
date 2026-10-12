@@ -87,4 +87,29 @@ run
 check "config left alone"                     test -e "$R/home/boneio/boneio/output32x10A.yaml"
 check "overlay still fitted to the board"     overlay BONEIO-BLACK-PINS-v0.4-v0.8.dtbo
 
+echo "BONEIO_SD_PASSWORD is the eMMC's business inside the flasher"
+make_root no no "BONEIO_SD_PASSWORD=bench pass"
+printf '#!/bin/sh\ncat > "%s/chpasswd.in"\n' "$T" > "$BIN/chpasswd"; chmod +x "$BIN/chpasswd"
+run
+check "not applied with ROOT given"           test ! -e "$T/chpasswd.in"
+check "left on the card for the SD boot"      grep -qx "BONEIO_SD_PASSWORD=bench pass" "$B/boneio.txt"
+
+# The running system (no ROOT) writes /home/boneio and /var/lib/boneio, so this
+# one runs in a user and mount namespace with tmpfs over both.
+echo "BONEIO_SD_PASSWORD on a card booted as the controller"
+if unshare -rm true 2>/dev/null; then
+    make_root no no "$(printf 'DEVICE_TYPE=cover\nBONEIO_SD_PASSWORD=bench pass\r\n')"
+    printf '#!/bin/sh\ncat > "%s/chpasswd.in"\n' "$T" > "$BIN/chpasswd"
+    for stub in chage logger systemctl; do printf '#!/bin/sh\nexit 0\n' > "$BIN/$stub"; done  # never the host's reboot
+    chmod +x "$BIN"/*
+    cp "$SETUP" "$T/setup"  # the checkout may itself be under the hidden /home
+    PATH="$BIN:$PATH" unshare -rm sh -c 'mount -t tmpfs none /home && mount -t tmpfs none /var/lib && sh "$1" "" "$2"' _ "$T/setup" "$B" >/dev/null
+    check "password handed to chpasswd, spaces kept" grep -qx "boneio:bench pass" "$T/chpasswd.in"
+    check "password gone from boneio.txt"         sh -c '! grep -q "bench pass" "$1"' _ "$B/boneio.txt"
+    check "marker left in its place"              grep -qx "BONEIO_SD_PASSWORD_SET=1" "$B/boneio.txt"
+    check "other settings kept"                   grep -qx "DEVICE_TYPE=cover" "$B/boneio.txt"
+else
+    echo "  skip  no user namespaces here"
+fi
+
 [ "$FAILS" -eq 0 ] && echo "all passed" || { echo "$FAILS failed"; exit 1; }

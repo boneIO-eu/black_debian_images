@@ -210,6 +210,36 @@ else
     REBOOT=true
 fi
 
+# --- SSH password for a card booted as the controller ------------------------
+
+# BONEIO_SD_PASSWORD gives the boneio login a password on the system booted
+# from this card, so a bench card can be reached over SSH without the
+# first-run wizard. Only the running system: inside the flasher (ROOT given)
+# the system being set up is the eMMC, which BONEIO_EMMC_PASSWORD is for.
+#
+# The value is read raw — a password may hold spaces — and the line is then
+# replaced with BONEIO_SD_PASSWORD_SET=1, applied or not, so it does not stay
+# readable on the card. Its bytes may linger in freed FAT clusters; whoever
+# holds the card can rewrite /etc/shadow on it anyway.
+if [ -z "$ROOT" ] && grep -q '^[[:space:]]*BONEIO_SD_PASSWORD=' "$BOOTFS/boneio.txt" 2>/dev/null; then
+    SD_PASSWORD="$(sed -n 's/^[[:space:]]*BONEIO_SD_PASSWORD=//p' "$BOOTFS/boneio.txt" | tr -d '\r' | tail -n 1)"
+    if [ -z "$SD_PASSWORD" ]; then
+        :
+    elif printf 'boneio:%s\n' "$SD_PASSWORD" | chpasswd; then
+        # chpasswd clears a lock; an expiry left at 0 would still demand a change.
+        chage -d "$(( $(date +%s) / 86400 ))" boneio 2>/dev/null || true
+        log "boneio SSH password set from boneio.txt"
+    else
+        log "could not set the boneio password from boneio.txt"
+    fi
+    unset SD_PASSWORD
+    if sed -i 's/^[[:space:]]*BONEIO_SD_PASSWORD=.*/BONEIO_SD_PASSWORD_SET=1/' "$BOOTFS/boneio.txt"; then
+        sync
+    else
+        log "could not remove BONEIO_SD_PASSWORD from boneio.txt — delete it by hand"
+    fi
+fi
+
 # --- done --------------------------------------------------------------------
 
 # Recorded before any reboot, so a board that cannot come back up on the new

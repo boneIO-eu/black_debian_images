@@ -37,6 +37,14 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
+# One run at a time: a second one tears down the Docker networks and stops
+# services the first is in the middle of setting up. Held until exit.
+exec 9>/run/boneio-setup.lock
+if ! flock -n 9; then
+   echo "ERROR: setup_boneio.sh is already running on this board — wait for it to finish."
+   exit 1
+fi
+
 # Colors
 BLUE='\033[0;34m'
 RED='\033[0;31m'
@@ -1026,8 +1034,16 @@ else
     # Remove stale containers/networks from previous image runs
     docker compose down --remove-orphans 2>&1 || true
     docker network prune -f 2>/dev/null || true
-    docker compose pull 2>&1 || log_warn "   Docker image pull failed (will retry on first boot)"
-    docker compose up -d 2>&1 || log_warn "   Docker compose up failed"
+    docker compose pull 2>&1 || log_warn "   Docker image pull failed — using the image already in the store, if any"
+    # Fatal, and before the prune below: with Node-RED not running, its image
+    # is unused and the prune deletes it, and sealing would then ship an image
+    # whose Node-RED nothing ever pulls back. Two runs of this script at once
+    # did exactly that (the other one's 'compose down' cancelled this network).
+    if ! docker compose up -d 2>&1; then
+        log_error "❌ Node-RED did not start (docker compose up failed); not sealing this image."
+        log_error "   Fix the cause and run this script again."
+        exit 1
+    fi
     log_info "   Docker containers started"
     # Images no container uses any more — the Caddy image an inherited store
     # still has, now that the compose file has no caddy service, for one. Tens of MB each on a small eMMC.

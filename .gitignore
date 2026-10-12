@@ -3,6 +3,8 @@
 *.img.xz
 *.img.gz
 *.img.bz2
+# SBOMs written next to the images
+*.cdx.json
 
 # Test scripts
 scripts/test_*.sh

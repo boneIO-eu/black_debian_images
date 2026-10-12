@@ -120,6 +120,14 @@ if [ "$GENERATE_EMMC_FLASHER" = true ] && [ ! -f "$FLASHER_INIT" ]; then
     exit 1
 fi
 
+# The component inventory ships with every image (scripts/finalize_sbom.py).
+# Checked before anything is built: an image without one is not releasable,
+# and finding that out after the xz step wastes the whole run.
+if ! command -v syft >/dev/null; then
+    print_error "syft not found — run: sudo ./scripts/setup_pc.sh"
+    exit 1
+fi
+
 # The app checkout that generates the config caches, and whose schema.yaml the
 # caches are keyed to. Defined here because apply_device_config verifies against
 # it long before the warming step runs.
@@ -615,6 +623,35 @@ create_emmc_flasher() {
     print_info "Created: ${flasher_name}.xz"
 }
 
+# Writes the image's SBOM next to it. One per version: the sdcard and flasher
+# images carry the same rootfs, and every board variant differs only in config.
+# Image catalogers, not directory ones: a rootfs holds installed packages, and
+# that is also what finds the npm and apk packages inside the baked-in Docker
+# images. Kernel modules and per-file entries are left out — thousands of lines
+# that name nothing a vulnerability database knows.
+write_sbom() {
+    local sbom="${OUTPUT_DIR}/${BASE_NAME}.cdx.json"
+    local raw="/tmp/boneio_syft.cdx.json"
+
+    # Called under `if !`, where set -e does not apply: every step returns on
+    # its own, and a file left by an earlier build of this version must not
+    # survive a failed one.
+    rm -f "$sbom"
+    print_info "Writing SBOM $sbom..."
+    SYFT_CHECK_FOR_APP_UPDATE=false \
+    SYFT_LINUX_KERNEL_CATALOG_MODULES=false \
+    SYFT_FILE_METADATA_SELECTION=none \
+        syft scan "dir:$MOUNT_POINT" -q \
+            --override-default-catalogers image \
+            --source-name boneio-black --source-version "$VERSION" \
+            -o "cyclonedx-json@1.6=$raw" || return 1
+    python3 "$SCRIPT_DIR/finalize_sbom.py" "$raw" "$MOUNT_POINT" "$VERSION" "$sbom" || return 1
+    rm -f "$raw"
+    if [ -n "$ACTUAL_UID" ] && [ -n "$ACTUAL_GID" ]; then
+        chown "$ACTUAL_UID:$ACTUAL_GID" "$sbom"
+    fi
+}
+
 # Function to process one device type
 process_device_type() {
     local device_name="$1"
@@ -647,6 +684,14 @@ process_device_type() {
         return 1
     fi
     
+    # Step 3b: SBOM, while the rootfs is mounted
+    if ! write_sbom; then
+        print_error "Failed to write the SBOM for $device_name"
+        unmount_image
+        rm -f "$output_name"
+        return 1
+    fi
+
     # Step 4: Install flasher script if needed
     if [ "$GENERATE_EMMC_FLASHER" = true ]; then
         install_flasher_script

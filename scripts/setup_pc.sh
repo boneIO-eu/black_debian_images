@@ -15,6 +15,7 @@
 #   - curl, ca-certificates (needed to fetch uv / pishrink.sh)
 #   - uv                    (astral.sh installer, per-user, optional but recommended)
 #   - pishrink.sh           (github.com/Drewsif/PiShrink, installed to /usr/local/bin)
+#   - syft                  (github.com/anchore/syft, pinned, to /usr/local/bin — SBOM)
 
 set -e
 
@@ -36,6 +37,31 @@ fi
 # Get the actual user who invoked sudo, so uv is installed for them, not root
 ACTUAL_USER="${SUDO_USER:-$USER}"
 ACTUAL_HOME=$(getent passwd "$ACTUAL_USER" | cut -d: -f6)
+
+# syft — writes the SBOM generate_all_images.sh ships next to every image.
+# Pinned and checked against the release's checksums: it reads the whole rootfs
+# as root, and a version change can change what ends up in the inventory.
+# Before the apt check: it needs only curl, tar and sha256sum, and the image
+# build refuses to run without it on any distro.
+SYFT_VERSION="1.54.1"
+if command -v syft &>/dev/null && syft version 2>/dev/null | grep -q "^Version: *${SYFT_VERSION}$"; then
+    print_info "syft ${SYFT_VERSION} already installed, skipping."
+else
+    print_info "Installing syft ${SYFT_VERSION} to /usr/local/bin..."
+    case "$(uname -m)" in
+        x86_64) SYFT_ARCH=amd64 ;;
+        aarch64) SYFT_ARCH=arm64 ;;
+        *) print_error "No syft build for $(uname -m)"; exit 1 ;;
+    esac
+    SYFT_TMP=$(mktemp -d)
+    SYFT_TGZ="syft_${SYFT_VERSION}_linux_${SYFT_ARCH}.tar.gz"
+    SYFT_URL="https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}"
+    curl -fsSL -o "$SYFT_TMP/$SYFT_TGZ" "$SYFT_URL/$SYFT_TGZ"
+    curl -fsSL -o "$SYFT_TMP/checksums.txt" "$SYFT_URL/syft_${SYFT_VERSION}_checksums.txt"
+    (cd "$SYFT_TMP" && grep " ${SYFT_TGZ}\$" checksums.txt | sha256sum -c --quiet)
+    tar -xzf "$SYFT_TMP/$SYFT_TGZ" -C /usr/local/bin syft
+    rm -rf "$SYFT_TMP"
+fi
 
 if ! command -v apt-get &>/dev/null; then
     print_error "This script only supports apt-based systems (Ubuntu/Debian)."
@@ -79,7 +105,7 @@ fi
 
 echo ""
 print_info "PC setup complete. Checking tools..."
-for tool in losetup partprobe blkid sfdisk parted growpart e2fsck resize2fs xz xzcat pishrink.sh; do
+for tool in losetup partprobe blkid sfdisk parted growpart e2fsck resize2fs xz xzcat pishrink.sh syft; do
     if command -v "$tool" &>/dev/null; then
         echo "  [OK] $tool"
     else

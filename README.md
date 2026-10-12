@@ -75,7 +75,7 @@ Włóż kartę SD ze świeżym Debian 13 do BBB i uruchom:
 
 ```bash
 curl -H 'Cache-Control: no-cache' -fsSL \
-  https://raw.githubusercontent.com/boneIO-eu/black_debian_images/main/scripts/setup_boneio.sh | sudo bash
+  https://raw.githubusercontent.com/boneIO-eu/black_debian_images/main/scripts/setup_boneio.sh | sudo BONEIO_VERSION=1.6.0 bash
 ```
 
 Skrypt automatycznie:

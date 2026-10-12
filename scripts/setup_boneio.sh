@@ -1,11 +1,12 @@
 #!/bin/bash
 ## BoneIO Black - Complete System Setup Script
-## Usage: curl -H 'Cache-Control: no-cache' -fsSL https://raw.githubusercontent.com/boneIO-eu/black_debian_images/main/scripts/setup_boneio.sh | sudo bash
+## Usage: curl -H 'Cache-Control: no-cache' -fsSL https://raw.githubusercontent.com/boneIO-eu/black_debian_images/main/scripts/setup_boneio.sh | sudo BONEIO_VERSION=1.6.0 bash
 ## Options: --no-cleanup  Skip final cleanup step (for testing on a live system)
 ##          --force       Force re-run all steps (ignore completion markers)
 ##
 ## Environment:
-##   BONEIO_VERSION=1.6.0.devN   which boneIO goes into the image
+##   BONEIO_VERSION=1.6.0.devN   which boneIO goes into the image (required,
+##                               unless BONEIO_WHEEL names it)
 ##   BONEIO_USER_PASSWORD=...    ship a WORKING password for the boneio account
 ##                               instead of locking it. For images that have to
 ##                               answer automation. Never for something that
@@ -32,7 +33,7 @@ done
 # Check root
 if [[ $EUID -ne 0 ]]; then
    echo "ERROR: This script must be run with sudo privileges!"
-   echo "Usage: curl -fsSL ... | sudo bash"
+   echo "Usage: curl -fsSL ... | sudo BONEIO_VERSION=<version> bash"
    exit 1
 fi
 
@@ -50,7 +51,7 @@ log_skip() { echo -e "${BLUE}[SKIP]${NC} $1"; }
 
 BONEIO_USER="${BONEIO_USER:-boneio}"
 BONEIO_HOME="/home/${BONEIO_USER}"
-SCRIPT_VERSION="2026-09-25.1"
+SCRIPT_VERSION="2026-10-12.1"
 
 # Which boneIO goes into the image.
 #
@@ -68,14 +69,13 @@ SCRIPT_VERSION="2026-09-25.1"
 # dependency. An exact `==` on a pre-release version is honoured by pip without
 # `--pre`, which is exactly the narrow permission wanted here.
 #
-# Override for a one-off build:  BONEIO_VERSION=1.6.0.devN ./setup_boneio.sh
+#   curl ... | sudo BONEIO_VERSION=1.6.0.devN bash
 #
-# Bumping this is what carries app changes into a new image. The flasher script
-# is copied from this repo when a card is written, so changes there need no new
-# image — but anything in the boneIO application does, and that is what this
-# line decides.
+# No default. A default here is a version somebody has to remember to bump, and
+# one that was not (dev23, long after dev44) installed itself over a newer
+# boneIO and failed halfway through setup. Asked for, every time.
 REQUESTED_BONEIO_VERSION="${BONEIO_VERSION:-}"
-BONEIO_VERSION="${BONEIO_VERSION:-1.6.0.dev23}"
+BONEIO_VERSION="${BONEIO_VERSION:-}"
 
 # A wheel built from a working tree (app_black/scripts/build_local_wheel.sh),
 # to test changes on a real controller or image without releasing a dev
@@ -97,6 +97,11 @@ if [ -n "$BONEIO_WHEEL" ]; then
         echo "BONEIO_VERSION=$REQUESTED_BONEIO_VERSION but the wheel is $BONEIO_VERSION" >&2
         exit 1
     fi
+fi
+if [ -z "$BONEIO_VERSION" ]; then
+    echo "ERROR: say which boneIO goes into the image:" >&2
+    echo "  curl ... | sudo BONEIO_VERSION=1.6.0.devN bash" >&2
+    exit 1
 fi
 
 # --- Idempotent step markers ---

@@ -218,7 +218,7 @@ log_info "Setup script uploaded. Running..."
 # We write a marker file on success BEFORE poweroff.
 sshpass -p "${BONEIO_PASS}" ssh ${SSH_OPTS} "${BONEIO_USER}@${BBB_USB_IP}" \
     "echo '${BONEIO_PASS}' | sudo -S bash -c '
-        bash /tmp/setup_boneio.sh && touch /tmp/.setup_ok
+        BONEIO_VERSION=${VERSION} bash /tmp/setup_boneio.sh && touch /tmp/.setup_ok
     '" \
     || true  # SSH dies when BBB powers off — expected
 

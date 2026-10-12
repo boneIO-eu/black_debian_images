@@ -102,6 +102,7 @@ if [ -n "$BONEIO_WHEEL_SRC" ]; then
     # Set, so the verification step checks the image got this version.
     BONEIO_VERSION="$WHEEL_VERSION"
 fi
+[ -n "$BONEIO_VERSION" ] || die "BONEIO_VERSION is not set — setup_boneio.sh needs to know which boneIO to install"
 
 for tool in systemd-nspawn losetup sfdisk e2fsck resize2fs dumpe2fs blkid rsync unzip; do
     command -v "$tool" >/dev/null || die "missing tool: $tool"

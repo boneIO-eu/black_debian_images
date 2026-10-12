@@ -42,7 +42,7 @@ i2ctransfer -y ${I2C_BUS} w2@${ADDR} 0x00 0xB2
 i2ctransfer -y ${I2C_BUS} w2@${ADDR} 0x00 0x02
 i2ctransfer -y ${I2C_BUS} w2@${ADDR} 0x00 0x10
 # Split into 32-byte chunks (i2c block limit)
-echo "${L1}" | tr ' ' '\n' | {
+printf '%s\n' ${L1} | {
     chunk=""
     count=0
     while read byte; do
@@ -60,7 +60,7 @@ echo "${L1}" | tr ' ' '\n' | {
 i2ctransfer -y ${I2C_BUS} w2@${ADDR} 0x00 0xB5
 i2ctransfer -y ${I2C_BUS} w2@${ADDR} 0x00 0x02
 i2ctransfer -y ${I2C_BUS} w2@${ADDR} 0x00 0x10
-echo "${L2}" | tr ' ' '\n' | {
+printf '%s\n' ${L2} | {
     chunk=""
     count=0
     while read byte; do

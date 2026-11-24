@@ -1006,8 +1006,16 @@ reset_accounts () {
 		fi
 	elif chroot "$OLD_ROOT" passwd -l boneio > /dev/null 2>&1; then
 		# Locked, as a new image ships it: the wizard's password becomes the
-		# SSH one again.
-		message="INFO: boneio SSH login locked until the first-run wizard sets it" ; broadcast
+		# SSH one again. Only if the once-only flag goes too: boneio-system
+		# refuses service-password-init while it exists, and the login would
+		# stay locked with no way to open it from the panel.
+		if [ ! -f "$OLD_ROOT/var/lib/boneio/service-password.set" ] \
+			|| mv "$OLD_ROOT/var/lib/boneio/service-password.set" \
+				"$OLD_ROOT/var/lib/boneio/service-password.set.reset-${stamp}"; then
+			message="INFO: boneio SSH login locked until the first-run wizard sets it" ; broadcast
+		else
+			message="ERROR: Could not clear the SSH password flag; the wizard cannot set it" ; broadcast
+		fi
 	else
 		message="ERROR: Could not lock the boneio login" ; broadcast
 	fi
